@@ -1,0 +1,1075 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{dsfont}  % for \mathds{1}
+
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{geometry}
+\usepackage{hyperref}
+
+\geometry{margin=1in}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\begin{document}
+
+
+\section{Basic Idea of Trust Region Optimization}
+
+Trust region optimization is an iterative method. At each step, instead of solving the full optimization problem directly, we build a simpler local model around the current point and solve that simpler problem inside a small allowed region. This allowed region is called the \textbf{trust region}.
+
+\subsection{The Real Problem}
+
+The real optimization problem is
+\begin{equation}
+\min_x f(x).
+\end{equation}
+
+This is the main problem we truly want to solve. Here, $f(x)$ is the actual objective function.
+
+\subsection{The Trust Region Subproblem}
+
+At iteration $k$, suppose the current point is $x_k$. Instead of minimizing $f(x)$ directly over all possible values of $x$, trust region methods solve a smaller local problem:
+\begin{equation}
+\min_d m_k(d)
+\quad \text{subject to} \quad \|d\| \leq \Delta_k.
+\end{equation}
+
+Here:
+\begin{itemize}
+    \item $d$ is the step or change we want to take,
+    \item $m_k(d)$ is a local model that approximates $f$ near $x_k$,
+    \item $\Delta_k$ is the largest step size allowed at iteration $k$.
+\end{itemize}
+
+So, the real problem is the full optimization problem, while the trust region subproblem is the smaller temporary problem used only to decide the next step.
+
+\subsection{Meaning of the Model $m_k(d)$}
+
+A common trust region model is
+\begin{equation}
+m_k(d) = f(x_k) + g_k^\top d + \frac{1}{2} d^\top B_k d.
+\end{equation}
+
+The terms mean the following:
+\begin{itemize}
+    \item $f(x_k)$ is the current function value,
+    \item $g_k$ is the gradient at the current point,
+    \item $B_k$ is the curvature matrix, usually the Hessian or an approximation to it,
+    \item $d$ is the step being tested.
+\end{itemize}
+
+In simple terms:
+\begin{itemize}
+    \item the gradient tells us the local slope,
+    \item the Hessian tells us how the slope is changing,
+    \item the trust region tells us how far we are allowed to move.
+\end{itemize}
+
+\subsection{A Simple Numerical Example}
+
+Consider the function
+\begin{equation}
+f(x) = (x-3)^4 + 1.
+\end{equation}
+
+Suppose the current point is
+\begin{equation}
+x_0 = 1.
+\end{equation}
+
+\subsubsection{Step 1: Compute the Current Function Value}
+
+At $x_0 = 1$,
+\begin{equation}
+f(1) = (1-3)^4 + 1 = (-2)^4 + 1 = 16 + 1 = 17.
+\end{equation}
+
+So the current function value is
+\begin{equation}
+f(x_0) = 17.
+\end{equation}
+
+\subsubsection{Step 2: Compute the Gradient}
+
+The first derivative is
+\begin{equation}
+f'(x) = 4(x-3)^3.
+\end{equation}
+
+At $x_0 = 1$,
+\begin{equation}
+f'(1) = 4(1-3)^3 = 4(-2)^3 = 4(-8) = -32.
+\end{equation}
+
+So the gradient is
+\begin{equation}
+g_0 = -32.
+\end{equation}
+
+\subsubsection{Step 3: Compute the Hessian}
+
+The second derivative is
+\begin{equation}
+f''(x) = 12(x-3)^2.
+\end{equation}
+
+At $x_0 = 1$,
+\begin{equation}
+f''(1) = 12(1-3)^2 = 12(-2)^2 = 12(4) = 48.
+\end{equation}
+
+So the Hessian is
+\begin{equation}
+B_0 = 48.
+\end{equation}
+
+\subsection{Linear Model}
+
+If we ignore curvature, then we use a linear model:
+\begin{equation}
+m(d) = f(x_0) + g_0 d.
+\end{equation}
+
+Substituting the numbers,
+\begin{equation}
+m(d) = 17 + (-32)d,
+\end{equation}
+that is,
+\begin{equation}
+m(d) = 17 - 32d.
+\end{equation}
+
+This means that near $x_0=1$, the function is approximated by a straight line.
+
+\subsection{Quadratic Model}
+
+If we include curvature, then the model becomes
+\begin{equation}
+m(d) = f(x_0) + g_0 d + \frac{1}{2} B_0 d^2.
+\end{equation}
+
+Substituting the numbers,
+\begin{equation}
+m(d) = 17 + (-32)d + \frac{1}{2}(48)d^2.
+\end{equation}
+
+So,
+\begin{equation}
+m(d) = 17 - 32d + 24d^2.
+\end{equation}
+
+This is the quadratic trust region model for this example.
+
+\subsection{Trust Region Constraint in the Example}
+
+Suppose the allowed step size is
+\begin{equation}
+\Delta_0 = 0.5.
+\end{equation}
+
+Then the trust region constraint becomes
+\begin{equation}
+|d| \leq 0.5.
+\end{equation}
+
+This means we are only allowed to test steps between $-0.5$ and $0.5$.
+
+\subsection{Solving the Linear Trust Region Subproblem}
+
+Using the linear model,
+\begin{equation}
+m(d) = 17 - 32d,
+\end{equation}
+subject to
+\begin{equation}
+-0.5 \leq d \leq 0.5.
+\end{equation}
+
+Since $m(d)$ becomes smaller as $d$ becomes larger, the best choice is the largest allowed value:
+\begin{equation}
+d = 0.5.
+\end{equation}
+
+So the next point is
+\begin{equation}
+x_1 = x_0 + d = 1 + 0.5 = 1.5.
+\end{equation}
+
+\subsection{Predicted Reduction}
+
+The predicted reduction is the amount of decrease predicted by the model:
+\begin{equation}
+\mathrm{Pred}_0 = m(0) - m(d).
+\end{equation}
+
+At $d=0.5$,
+\begin{equation}
+m(0) = 17,
+\end{equation}
+and
+\begin{equation}
+m(0.5) = 17 - 32(0.5) = 17 - 16 = 1.
+\end{equation}
+
+Therefore,
+\begin{equation}
+\mathrm{Pred}_0 = 17 - 1 = 16.
+\end{equation}
+
+\subsection{Actual Reduction}
+
+The actual reduction is computed using the true function:
+\begin{equation}
+\mathrm{Ared}_0 = f(x_0) - f(x_0+d).
+\end{equation}
+
+We already have
+\begin{equation}
+f(1)=17.
+\end{equation}
+
+Now evaluate the function at the new point $x_1=1.5$:
+\begin{equation}
+f(1.5) = (1.5-3)^4 + 1 = (-1.5)^4 + 1.
+\end{equation}
+
+Since
+\begin{equation}
+(-1.5)^4 = 5.0625,
+\end{equation}
+we get
+\begin{equation}
+f(1.5) = 5.0625 + 1 = 6.0625.
+\end{equation}
+
+Thus,
+\begin{equation}
+\mathrm{Ared}_0 = 17 - 6.0625 = 10.9375.
+\end{equation}
+
+\subsection{Ratio of Actual to Predicted Reduction}
+
+The trust region ratio is
+\begin{equation}
+r_0 = \frac{\mathrm{Ared}_0}{\mathrm{Pred}_0}.
+\end{equation}
+
+Substituting the values,
+\begin{equation}
+r_0 = \frac{10.9375}{16} \approx 0.684.
+\end{equation}
+
+This ratio tells us how well the model matched the true function.
+
+\subsection{Interpretation of the Ratio}
+
+The ratio $r_0$ is interpreted as follows:
+\begin{itemize}
+    \item if $r_0$ is close to $1$, the model predicted well,
+    \item if $r_0$ is small, the model was not very accurate,
+    \item if $r_0$ is negative, the step was poor.
+\end{itemize}
+
+In this example,
+\begin{equation}
+r_0 \approx 0.684,
+\end{equation}
+so the step is useful, but the model was somewhat optimistic.
+
+\subsection{Step Acceptance}
+
+A common rule is:
+\begin{itemize}
+    \item accept the step if the ratio is large enough,
+    \item reject the step if the ratio is too small.
+\end{itemize}
+
+For example, if we use the threshold
+\begin{equation}
+\eta = 0.25,
+\end{equation}
+then since
+\begin{equation}
+r_0 = 0.684 > 0.25,
+\end{equation}
+the step is accepted.
+
+\subsection{Why This is Called a Trust Region Method}
+
+This method is called a trust region method because we do not trust the local model everywhere. We only trust it inside a small region around the current point. In this example, we trusted the model only for steps satisfying
+\begin{equation}
+|d| \leq 0.5.
+\end{equation}
+
+Outside that region, the local model may no longer be accurate.
+
+\subsection{Summary}
+
+The trust region idea can be summarized as follows:
+\begin{enumerate}
+    \item Start from the current point $x_k$.
+    \item Build a simple local model $m_k(d)$.
+    \item Restrict the step to a small region $\|d\| \leq \Delta_k$.
+    \item Solve the trust region subproblem to get a candidate step $d$.
+    \item Compare the predicted reduction with the actual reduction.
+    \item Accept or reject the step.
+    \item Adjust the trust region size for the next iteration.
+\end{enumerate}
+
+
+
+\section{How the cost vector $C$ enters the trust-region formulation}
+
+The goal here is not yet to alternate between $(\boldsymbol{\alpha},\boldsymbol{\beta})$ and $C$.  
+The goal is only to show how the class-cost vector $C$ is inserted into the objective, and then derive the optimization problem used to calculate $C$.
+
+\subsection{Step 1: Start from the cost-sensitive loss}
+
+For each profile $m$, define the prediction
+\begin{equation}
+\hat{\mathbf y}_m
+=
+\sum_{i=1}^{S}\alpha_m^i \mathbf X_m^i \boldsymbol{\beta}^i.
+\end{equation}
+
+Then the cost-sensitive loss is
+\begin{equation}
+f^C(\mathbf X_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf y_m)
+=
+\frac{1}{2n_m}
+\sum_{j=1}^{n_m}
+C_{y_{m,j}}
+\big(\hat y_{m,j}-y_{m,j}\big)^2.
+\end{equation}
+
+So the full cost-sensitive iSFS objective becomes
+\begin{equation}
+\Phi(\boldsymbol{\alpha},\boldsymbol{\beta},C)
+=
+\frac{1}{|\mathbf{pf}|}
+\sum_{m\in\mathbf{pf}}
+f^C(\mathbf X_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf y_m)
++
+\lambda \mathbf R_{\boldsymbol{\beta}}(\boldsymbol{\beta}).
+\end{equation}
+
+\subsection{Step 2: Isolate the part that depends on $C$}
+
+Now group the loss by class. Define
+\begin{equation}
+L_k(\boldsymbol{\alpha},\boldsymbol{\beta})
+=
+\frac{1}{|\mathbf{pf}|}
+\sum_{m\in\mathbf{pf}}
+\frac{1}{2n_m}
+\sum_{\substack{j:\,y_{m,j}=k}}
+\big(\hat y_{m,j}-y_{m,j}\big)^2,
+\qquad k=1,\dots,K.
+\end{equation}
+
+This $L_k$ is the total contribution of class $k$ to the squared loss.
+
+Using this notation, the part of the objective that depends on $C$ becomes
+\begin{equation}
+\Phi_C(C)
+=
+\sum_{k=1}^{K} C_k\,L_k(\boldsymbol{\alpha},\boldsymbol{\beta}).
+\end{equation}
+
+In vector form,
+\begin{equation}
+\Phi_C(C)=L(\boldsymbol{\alpha},\boldsymbol{\beta})^\top C,
+\end{equation}
+where
+\begin{equation}
+L(\boldsymbol{\alpha},\boldsymbol{\beta})
+=
+\big(L_1(\boldsymbol{\alpha},\boldsymbol{\beta}),\dots,L_K(\boldsymbol{\alpha},\boldsymbol{\beta})\big)^\top.
+\end{equation}
+
+So, once $C$ is inserted into the model, the $C$-part of the objective is simply a linear function of $C$.
+
+\subsection{Step 3: Add the trust-region feasible set for $C$}
+
+We do not allow $C$ to move arbitrarily.  
+Instead, we restrict it to stay near the baseline cost vector $C^0$:
+\begin{equation}
+\mathcal B(C^0,\Delta_{\max})
+=
+\left\{
+C\in\mathbb R^K:
+\frac12\|C-C^0\|_2^2\le \Delta_{\max}
+\right\}.
+\end{equation}
+
+We also require nonnegativity:
+\begin{equation}
+C\ge 0.
+\end{equation}
+
+Therefore the feasible set for $C$ is
+\begin{equation}
+C \in \mathcal B(C^0,\Delta_{\max}) \cap \mathbb R_{\ge 0}^K.
+\end{equation}
+
+\subsection{Step 4: The optimization equation for calculating $C$}
+
+Since the $C$-dependent part is linear in $C$, the optimization problem for $C$ is
+\begin{equation}
+\max_{C}
+\;\Phi_C(C)
+=
+\max_{C}
+\sum_{k=1}^{K} C_k\,L_k(\boldsymbol{\alpha},\boldsymbol{\beta})
+\end{equation}
+subject to
+\begin{equation}
+\frac12\|C-C^0\|_2^2\le \Delta_{\max},
+\qquad
+C\ge 0.
+\end{equation}
+
+Equivalently,
+\begin{equation}
+\max_{C\in \mathcal B(C^0,\Delta_{\max})\cap\mathbb R_{\ge0}^K}
+L(\boldsymbol{\alpha},\boldsymbol{\beta})^\top C.
+\end{equation}
+
+This is the trust-region equation for $C$.
+
+\paragraph{Important remark.}
+For the $(\boldsymbol{\alpha},\boldsymbol{\beta})$ block we minimize, but for the $C$ block we maximize.  
+So the natural $C$-equation is a maximization problem, not a minimization problem.
+
+If one insists on writing it as a minimization problem, then it can be written as
+\begin{equation}
+\min_{C\in \mathcal B(C^0,\Delta_{\max})\cap\mathbb R_{\ge0}^K}
+-
+L(\boldsymbol{\alpha},\boldsymbol{\beta})^\top C.
+\end{equation}
+
+\subsection{Step 5: Rewrite using a trust-region step}
+
+Let
+\begin{equation}
+d = C - C^0.
+\end{equation}
+
+Then
+\begin{equation}
+C = C^0 + d.
+\end{equation}
+
+Substituting into the $C$-objective gives
+\begin{equation}
+\Phi_C(C)
+=
+L^\top(C^0+d)
+=
+L^\top C^0 + L^\top d.
+\end{equation}
+
+Since $L^\top C^0$ is constant with respect to $d$, maximizing over $C$ is the same as maximizing over $d$:
+\begin{equation}
+\max_d \; L^\top d
+\end{equation}
+subject to
+\begin{equation}
+\frac12\|d\|_2^2\le \Delta_{\max},
+\qquad
+C^0+d \ge 0.
+\end{equation}
+
+This is the trust-region subproblem for $C$.
+
+\subsection{Step 6: Closed-form calculation of $C$}
+
+If the nonnegativity bound is not active, then the problem becomes
+\begin{equation}
+\max_d \; L^\top d
+\quad
+\text{subject to}
+\quad
+\frac12\|d\|_2^2\le \Delta_{\max}.
+\end{equation}
+
+By Cauchy--Schwarz,
+\begin{equation}
+L^\top d \le \|L\|_2\,\|d\|_2.
+\end{equation}
+
+The maximum is attained when $d$ points in the same direction as $L$, with the largest allowed norm:
+\begin{equation}
+\|d\|_2=\sqrt{2\Delta_{\max}}.
+\end{equation}
+
+Therefore,
+\begin{equation}
+d^\star
+=
+\sqrt{2\Delta_{\max}}
+\frac{L}{\|L\|_2}.
+\end{equation}
+
+Hence the calculated cost vector is
+\begin{equation}
+\boxed{
+C^\star
+=
+C^0
++
+\sqrt{2\Delta_{\max}}
+\frac{L(\boldsymbol{\alpha},\boldsymbol{\beta})}{\|L(\boldsymbol{\alpha},\boldsymbol{\beta})\|_2}
+}
+\qquad
+\text{if }L\neq 0.
+\end{equation}
+
+If $L=0$, then there is no preferred direction, and one may simply take
+\begin{equation}
+C^\star = C^0.
+\end{equation}
+
+\subsection{Interpretation}
+
+This formula shows exactly how $C$ is calculated.
+
+\begin{itemize}
+    \item $C^0$ is the baseline cost vector.
+    \item $L(\boldsymbol{\alpha},\boldsymbol{\beta})$ tells us which classes currently have larger loss.
+    \item The trust-region radius $\Delta_{\max}$ controls how far $C$ is allowed to move away from $C^0$.
+\end{itemize}
+
+So the class with larger loss receives a larger increase in its cost.
+
+\subsection{A small numerical example}
+
+Suppose
+\begin{equation}
+C^0=\begin{bmatrix}0.5\\1.5\end{bmatrix},
+\qquad
+L=\begin{bmatrix}0.8\\0.2\end{bmatrix},
+\qquad
+\Delta_{\max}=0.125.
+\end{equation}
+
+First compute the step length:
+\begin{equation}
+\sqrt{2\Delta_{\max}}
+=
+\sqrt{2(0.125)}
+=
+\sqrt{0.25}
+=
+0.5.
+\end{equation}
+
+Next compute the norm of $L$:
+\begin{equation}
+\|L\|_2
+=
+\sqrt{0.8^2+0.2^2}
+=
+\sqrt{0.64+0.04}
+=
+\sqrt{0.68}
+\approx 0.8246.
+\end{equation}
+
+So
+\begin{equation}
+\frac{L}{\|L\|_2}
+\approx
+\begin{bmatrix}
+0.970\\
+0.243
+\end{bmatrix}.
+\end{equation}
+
+Thus,
+\begin{equation}
+d^\star
+=
+0.5
+\begin{bmatrix}
+0.970\\
+0.243
+\end{bmatrix}
+=
+\begin{bmatrix}
+0.485\\
+0.1215
+\end{bmatrix}.
+\end{equation}
+
+Finally,
+\begin{equation}
+C^\star
+=
+C^0+d^\star
+=
+\begin{bmatrix}
+0.5\\
+1.5
+\end{bmatrix}
++
+\begin{bmatrix}
+0.485\\
+0.1215
+\end{bmatrix}
+=
+\begin{bmatrix}
+0.985\\
+1.6215
+\end{bmatrix}.
+\end{equation}
+
+So in this example, class 1 gets a larger upward adjustment because its loss contribution is larger.
+
+\subsection{Final form}
+
+Therefore, the correct trust-region equation for the cost vector is
+\begin{equation}
+\boxed{
+\max_{C\in \mathcal B(C^0,\Delta_{\max})\cap\mathbb R_{\ge0}^K}
+\sum_{k=1}^{K} C_k\,L_k(\boldsymbol{\alpha},\boldsymbol{\beta})
+}
+\end{equation}
+or equivalently
+\begin{equation}
+\boxed{
+\min_{C\in \mathcal B(C^0,\Delta_{\max})\cap\mathbb R_{\ge0}^K}
+-
+\sum_{k=1}^{K} C_k\,L_k(\boldsymbol{\alpha},\boldsymbol{\beta})
+}
+\end{equation}
+with closed-form solution
+\begin{equation}
+\boxed{
+C^\star
+=
+C^0
++
+\sqrt{2\Delta_{\max}}
+\frac{L(\boldsymbol{\alpha},\boldsymbol{\beta})}{\|L(\boldsymbol{\alpha},\boldsymbol{\beta})\|_2}
+}
+\end{equation}
+when the bound $C\ge0$ is inactive.
+
+
+
+\section{Trust Region Concepts Linked to the Cost-Sensitive $C$-Block}
+
+This section connects the general trust-region ideas to the cost-sensitive part of the model. The goal is to show why the trust-region machinery is useful for updating the class-cost vector $C$, and how the main quantities --- the Cauchy step, predicted change, actual change, step acceptance, and radius update --- should be interpreted in this setting.
+
+\subsection{From the General Trust-Region Method to the $C$-Block}
+
+In the general trust-region method for minimization, we start from the local model
+\begin{equation}
+ m_k(d) = f(x_k) + g_k^\top d + \frac{1}{2} d^\top B_k d,
+\end{equation}
+and solve the trust-region subproblem
+\begin{equation}
+ \min_d m_k(d)
+ \qquad \text{subject to} \qquad \|d\|_2 \leq \Delta_k.
+\end{equation}
+
+Here:
+\begin{itemize}
+    \item $x_k$ is the current point,
+    \item $d$ is the proposed step,
+    \item $g_k$ is the gradient,
+    \item $B_k$ is the curvature matrix,
+    \item $\Delta_k$ is the working trust-region radius.
+\end{itemize}
+
+In our cost-sensitive block, the role of $x_k$ is played by the current class-cost vector $C^{(k)}$. Instead of minimizing a generic function $f(x)$, we update $C$ using the cost-sensitive objective
+\begin{equation}
+ \Phi_C(C) = \sum_{j=1}^{K} C_j L_j(\boldsymbol{\alpha},\boldsymbol{\beta}),
+\end{equation}
+where $L_j(\boldsymbol{\alpha},\boldsymbol{\beta}) \geq 0$ is the per-class loss coefficient.
+
+With $(\boldsymbol{\alpha},\boldsymbol{\beta})$ fixed, the function is linear in $C$. Therefore, the gradient with respect to $C$ is simply
+\begin{equation}
+ \nabla_C \Phi_C(C) = L,
+ \qquad
+ L = (L_1,\ldots,L_K)^\top.
+\end{equation}
+
+So, for the $C$-block, the trust-region method becomes a way of updating $C$ in the direction of the current loss vector $L$, while preventing the update from moving too far.
+
+\subsection{Why We Use a Trust Region for $C$}
+
+If there were no constraint on $C$, then maximizing $\Phi_C(C) = L^\top C$ would be degenerate, because the objective is linear and can grow without bound. To prevent this, we force $C$ to stay near a baseline cost vector $C^0$:
+\begin{equation}
+ \frac{1}{2}\|C - C^0\|_2^2 \leq \Delta_{\max},
+ \qquad C \geq 0.
+\end{equation}
+
+This means that the class-cost vector is only allowed to move inside a ball around the prior $C^0$, while staying nonnegative.
+
+In plain terms:
+\begin{itemize}
+    \item $C^0$ is the starting or baseline class-cost vector,
+    \item $\Delta_{\max}$ is the maximum amount of deviation allowed from that baseline,
+    \item $C \geq 0$ means class costs cannot become negative.
+\end{itemize}
+
+\subsection{Linear Trust-Region Model for the $C$-Block}
+
+At trust-region iteration $k$, let the current class-cost vector be $C^{(k)}$. Since the $C$-block is linear when $(\boldsymbol{\alpha},\boldsymbol{\beta})$ are fixed, we use the linear local model
+\begin{equation}
+ m_k(d) = \Phi_C(C^{(k)}) + L_k^\top d,
+\end{equation}
+where
+\begin{equation}
+ L_k = L\big(\boldsymbol{\alpha}^{(k)},\boldsymbol{\beta}^{(k)}\big).
+\end{equation}
+
+The trust-region subproblem is then
+\begin{equation}
+ \max_d \; L_k^\top d
+ \quad \text{subject to} \quad
+ \frac{1}{2}\|d\|_2^2 \leq \Delta_k,
+ \quad C^{(k)} + d \geq 0,
+ \quad \frac{1}{2}\|C^{(k)} + d - C^0\|_2^2 \leq \Delta_{\max}.
+\end{equation}
+
+This says that we want a step $d$ that increases the cost-sensitive objective as much as possible, but the step must satisfy three restrictions:
+\begin{itemize}
+    \item it must stay inside the working trust-region ball,
+    \item it must keep the updated cost vector nonnegative,
+    \item it must keep the updated cost vector inside the larger problem-level ball around $C^0$.
+\end{itemize}
+
+\subsection{Special Case: $B_k = 0$}
+
+In the general trust-region model, the quadratic term $\frac{1}{2} d^\top B_k d$ carries curvature information. In our $C$-block, we do not use a quadratic curvature term. That is,
+\begin{equation}
+ B_k = 0.
+\end{equation}
+
+So the model becomes purely linear:
+\begin{equation}
+ m_k(d) = \Phi_C(C^{(k)}) + L_k^\top d.
+\end{equation}
+
+This is why our $C$-block is called the \textbf{TR-L} case: trust region with a \textbf{linear model}.
+
+In simple terms, this means:
+\begin{itemize}
+    \item we only use slope information,
+    \item we do not use curvature information,
+    \item the step is chosen from the direction of the loss vector $L_k$.
+\end{itemize}
+
+\subsection{The Cauchy Step in the Linear Model}
+
+For a linear trust-region model, the best unconstrained step is obtained by moving in the direction of $L_k$ until the boundary of the trust region is reached. Since our trust-region constraint is written as
+\begin{equation}
+ \frac{1}{2}\|d\|_2^2 \leq \Delta_k,
+\end{equation}
+the maximum allowed step length is
+\begin{equation}
+ \|d\|_2 \leq \sqrt{2\Delta_k}.
+\end{equation}
+
+Therefore, the unconstrained linear Cauchy step is
+\begin{equation}
+ d_k^{\mathrm{lin}} = \sqrt{2\Delta_k}\;\frac{L_k}{\|L_k\|_2}.
+\end{equation}
+
+In plain terms, this means:
+\begin{itemize}
+    \item take the loss vector $L_k$,
+    \item convert it to a unit direction,
+    \item multiply it by the allowed step length $\sqrt{2\Delta_k}$.
+\end{itemize}
+
+So the step points toward the classes with larger current losses.
+
+\subsection{Numerical Example for the $C$-Block}
+
+Consider a simple two-class example. Let
+\begin{equation}
+ C^0 = \begin{bmatrix}1.0 \\ 1.0\end{bmatrix},
+ \qquad
+ C^{(k)} = \begin{bmatrix}1.0 \\ 1.0\end{bmatrix},
+ \qquad
+ L_k = \begin{bmatrix}0.8 \\ 0.2\end{bmatrix}.
+\end{equation}
+
+Suppose the working trust-region radius is
+\begin{equation}
+ \Delta_k = 0.125.
+\end{equation}
+
+Then the allowed step length is
+\begin{equation}
+ \sqrt{2\Delta_k} = \sqrt{2(0.125)} = \sqrt{0.25} = 0.5.
+\end{equation}
+
+Next, compute the norm of the loss vector:
+\begin{equation}
+ \|L_k\|_2 = \sqrt{0.8^2 + 0.2^2} = \sqrt{0.64 + 0.04} = \sqrt{0.68} \approx 0.8246.
+\end{equation}
+
+So the unit direction is
+\begin{equation}
+ \frac{L_k}{\|L_k\|_2}
+ = \frac{1}{0.8246}
+ \begin{bmatrix}0.8 \\ 0.2\end{bmatrix}
+ \approx
+ \begin{bmatrix}0.9701 \\ 0.2425\end{bmatrix}.
+\end{equation}
+
+Therefore, the linear Cauchy step is
+\begin{equation}
+ d_k^{\mathrm{lin}}
+ = 0.5
+ \begin{bmatrix}0.9701 \\ 0.2425\end{bmatrix}
+ \approx
+ \begin{bmatrix}0.4851 \\ 0.1213\end{bmatrix}.
+\end{equation}
+
+The updated cost vector is then
+\begin{equation}
+ C^{(k+1)} = C^{(k)} + d_k^{\mathrm{lin}}
+ \approx
+ \begin{bmatrix}1.0 \\ 1.0\end{bmatrix}
+ +
+ \begin{bmatrix}0.4851 \\ 0.1213\end{bmatrix}
+ =
+ \begin{bmatrix}1.4851 \\ 1.1213\end{bmatrix}.
+\end{equation}
+
+Interpretation:
+\begin{itemize}
+    \item class 1 has the larger current loss,
+    \item so class 1 receives the larger increase in cost,
+    \item class 2 also increases, but by a smaller amount.
+\end{itemize}
+
+\subsection{Predicted Change}
+
+In the general trust-region method for minimization, we compare predicted reduction against actual reduction. In the $C$-block, the sign changes because we are \emph{maximizing} the local model. So here we compare predicted \textbf{increase} against actual \textbf{increase}.
+
+The predicted change from the linear model is
+\begin{equation}
+ \mathrm{Pred}_k = m_k(d_k) - m_k(0) = L_k^\top d_k.
+\end{equation}
+
+Using the numerical example,
+\begin{equation}
+ \mathrm{Pred}_k
+ =
+ \begin{bmatrix}0.8 & 0.2\end{bmatrix}
+ \begin{bmatrix}0.4851 \\ 0.1213\end{bmatrix}
+ = 0.8(0.4851) + 0.2(0.1213)
+ \approx 0.3881 + 0.0243
+ = 0.4124.
+\end{equation}
+
+So the linear model predicts that this step should improve the $C$-block objective by about $0.4124$.
+
+In plain terms, the predicted change is what the linear model says should happen \emph{before} we check the true reduced objective.
+
+\subsection{Actual Change}
+
+The actual change is measured using the reduced objective after the other block has been re-solved. Define
+\begin{equation}
+ F(C) = \min_{\boldsymbol{\alpha},\boldsymbol{\beta}} \Phi(\boldsymbol{\alpha},\boldsymbol{\beta},C).
+\end{equation}
+
+Then the actual change is
+\begin{equation}
+ \mathrm{Ared}_k = F(C^{(k)} + d_k) - F(C^{(k)}).
+\end{equation}
+
+Suppose that after re-solving Block A, we observe
+\begin{equation}
+ F(C^{(k)}) = 1.80,
+ \qquad
+ F(C^{(k)} + d_k) = 2.10.
+\end{equation}
+
+Then the actual change is
+\begin{equation}
+ \mathrm{Ared}_k = 2.10 - 1.80 = 0.30.
+\end{equation}
+
+In plain terms, the actual change is what truly happened after the model was tested inside the full alternating scheme.
+
+\subsection{Ratio of Actual Change to Predicted Change}
+
+The trust-region ratio is
+\begin{equation}
+ r_k = \frac{\mathrm{Ared}_k}{\mathrm{Pred}_k}.
+\end{equation}
+
+Using the numbers above,
+\begin{equation}
+ r_k = \frac{0.30}{0.4124} \approx 0.7274.
+\end{equation}
+
+This ratio measures how accurate the linear model was.
+
+Interpretation:
+\begin{itemize}
+    \item if $r_k \approx 1$, the linear model predicted well,
+    \item if $r_k$ is positive but much smaller than $1$, the model was too optimistic,
+    \item if $r_k \leq 0$, the step was poor because the true reduced objective did not improve as expected.
+\end{itemize}
+
+So, in this example, the model was useful, but it predicted a larger improvement than what actually occurred.
+
+\subsection{Why Predicted and Actual Change Matter}
+
+These two quantities are important because they tell us whether the step we proposed should be trusted.
+
+\begin{itemize}
+    \item The \textbf{predicted change} comes from the local linear model.
+    \item The \textbf{actual change} comes from the true reduced objective after Block A reacts to the new $C$.
+\end{itemize}
+
+If these two values are close, then the local model is reliable and the trust-region radius can be increased or maintained. If they are very different, then the radius should be reduced so that future steps are more conservative.
+
+This is the main reason trust-region methods are useful here: even though the $C$-block model is linear at one step, the full reduced function $F(C)$ is not globally linear because $L$ changes whenever $(\boldsymbol{\alpha},\boldsymbol{\beta})$ are re-optimized.
+
+\subsection{Step Acceptance}
+
+The step-acceptance rule decides whether the proposed update should be kept. A standard rule is:
+\begin{equation}
+ \text{accept the step if } r_k \geq \tau_1,
+\end{equation}
+where $\tau_1$ is a fixed threshold, often chosen as
+\begin{equation}
+ \tau_1 = 0.25.
+\end{equation}
+
+In our numerical example,
+\begin{equation}
+ r_k \approx 0.7274 > 0.25,
+\end{equation}
+so the step is accepted.
+
+In plain terms, step acceptance answers the question:
+
+\begin{quote}
+Was this proposed move good enough to keep?
+\end{quote}
+
+If yes, we update $C$. If not, we reject the step and keep the old $C$.
+
+\subsection{Radius Update}
+
+After the step is accepted or rejected, the working radius $\Delta_k$ is updated. A common rule is:
+\begin{itemize}
+    \item if $r_k < \tau_1$, shrink the radius,
+    \item if $\tau_1 \leq r_k < \tau_2$, keep the radius,
+    \item if $r_k \geq \tau_2$, enlarge the radius.
+\end{itemize}
+
+A typical choice is
+\begin{equation}
+ \tau_1 = 0.25,
+ \qquad
+ \tau_2 = 0.75.
+\end{equation}
+
+Since our example gives
+\begin{equation}
+ r_k \approx 0.7274,
+\end{equation}
+we would usually accept the step and keep the radius about the same.
+
+In plain terms:
+\begin{itemize}
+    \item a bad ratio means the model was unreliable, so we become more careful,
+    \item a good ratio means the model was reliable, so we may allow larger future steps.
+\end{itemize}
+
+\subsection{The Cauchy Decrease Condition}
+
+In the general trust-region theory for minimization, the Cauchy decrease condition says that the chosen step should achieve at least a fixed fraction of the decrease obtained by the basic steepest-descent step. It is a sufficient-descent condition.
+
+In our linear $C$-block model, the linear Cauchy step already goes in the best local direction and reaches the boundary of the trust region. Therefore, for the unconstrained linear case, the condition is automatically satisfied.
+
+In plain terms, the Cauchy decrease condition means:
+\begin{quote}
+The step should not be weak or useless. It should produce a meaningful improvement according to the local model.
+\end{quote}
+
+For our $C$-block, the linear boundary step already does this.
+
+\subsection{Why Iteration is Still Needed if the Model is Linear}
+
+A natural question is: if the $C$-block model is linear, why not solve it once and stop?
+
+The reason is that the full reduced function
+\begin{equation}
+ F(C) = \min_{\boldsymbol{\alpha},\boldsymbol{\beta}} \Phi(\boldsymbol{\alpha},\boldsymbol{\beta},C)
+\end{equation}
+is not globally linear in $C$. After each update to $C$, the Block A variables $(\boldsymbol{\alpha},\boldsymbol{\beta})$ are re-solved, and this changes the loss vector $L$.
+
+So the sequence is:
+\begin{enumerate}
+    \item compute $L_k$ at the current $C^{(k)}$,
+    \item propose a trust-region step using the linear model,
+    \item update $C$ if the step is accepted,
+    \item re-solve Block A,
+    \item recompute the loss vector,
+    \item repeat.
+\end{enumerate}
+
+Therefore, the linear model is local, but the overall reduced objective is nonlinear across iterations.
+
+\subsection{Bound Constraints and Coleman--Li Scaling}
+
+Our cost vector must satisfy
+\begin{equation}
+ C \geq 0.
+\end{equation}
+
+If a proposed step would push some component of $C$ below zero, then that step is infeasible. Coleman--Li scaling is the standard trust-region way of handling such bounds. Instead of using a perfectly round Euclidean ball, it uses a scaled ellipsoid that shrinks movement in directions that are close to an active bound.
+
+In plain terms:
+\begin{itemize}
+    \item if a component of $C$ is far from zero, it can move more freely,
+    \item if a component of $C$ is close to zero, movement toward the bound is reduced.
+\end{itemize}
+
+For the small-$K$ setting, this can often be handled by a simple clip or projection. Coleman--Li scaling is the principled general version.
+
+\subsection{Summary: Trust Region as a Cost-Sensitive $C$-Update}
+
+The trust-region interpretation of the cost-sensitive $C$-block is therefore:
+\begin{enumerate}
+    \item compute the current per-class loss vector $L_k$,
+    \item build the linear model $m_k(d) = \Phi_C(C^{(k)}) + L_k^\top d$,
+    \item propose the linear Cauchy step
+    \begin{equation*}
+    d_k^{\mathrm{lin}} = \sqrt{2\Delta_k}\;\frac{L_k}{\|L_k\|_2},
+    \end{equation*}
+    
+    
+    
+    
+    then enforce $C^{(k)}+d \geq 0$ and the outer ball around $C^0$,
+    \item compare the predicted increase with the actual increase,
+    \item accept or reject the step,
+    \item update the trust-region radius,
+    \item repeat after re-solving Block A.
+\end{enumerate}
+
+This is how the general trust-region framework becomes a practical cost-sensitive update rule for the class-cost vector $C$.
+
+
+\end{document}

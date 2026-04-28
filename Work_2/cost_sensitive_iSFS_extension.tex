@@ -1,0 +1,942 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[margin=1in]{geometry}
+\PassOptionsToPackage{hyphens}{url}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\usepackage{textcomp}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  showstringspaces=false,
+  breaklines=true,
+  numbers=none,
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{black!50},
+  backgroundcolor=\color{black!3},
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true
+}
+
+\lstdefinestyle{python}{
+  language=Python,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  stringstyle=\color{green!50!black},
+  commentstyle=\color{gray}\itshape
+}
+
+\newtheorem*{definition*}{Definition}
+\newtheorem*{remark*}{Remark}
+
+\title{Cost-Sensitive iSFS via Block Coordinate Descent}
+\author{Working Notes}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{quote}
+A cost-sensitive extension of the \textbf{incomplete Source-Feature Selection (iSFS)} model of Xiang, Yuan, Fan, Wang, Thompson \& Ye (KDD 2013). We introduce a learnable per-class cost vector $C$ and derive the BCD updates for jointly optimizing $(\alpha, \beta, C)$ using only the paper's notation.
+
+\medskip
+\noindent\textbf{Sources used throughout:}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Xiang et al. (2013).} \emph{Multi-Source Learning with Block-wise Missing Data for Alzheimer's Disease Prediction.} KDD '13. The iSFS objective is eq (14); its data-fitting term is eq (15); the alternating block updates for $\alpha$ and $\beta$ are eq (16) and eqs (17)--(18). Algorithm 2 in \S 3.2 lays out the original BCD scheme.
+  \item \textbf{Aggarwal,} \emph{Linear Algebra and Optimization for Machine Learning,} \S 4.10 and \S 8.3. The block coordinate descent framework, the multi-convex monotonicity theorem, and the K-means / ALS examples we inherit.
+  \item \textbf{Bertsimas, Pawlowski, Zhuo (JMLR 2018),} \emph{From Predictive Methods to Missing Data Imputation}. Uses BCD vs CD as the inner solver for non-convex imputation.
+  \item \textbf{Namkoong \& Duchi (2017),} \emph{Variance-based regularization with convex objectives,} NeurIPS --- distributionally robust optimization with the chi-squared ball, the closed-form max via KKT.
+  \item \textbf{Hu, Niu, Sato, Sugiyama (2018),} \emph{Does distributionally robust supervised learning give robust classifiers?,} ICML --- connects DRO directly to cost-sensitive learning.
+  \item \textbf{Yuan, Y. (2015),} \emph{Recent advances in trust-region algorithms,} Math.\ Program.\ Ser.\ B, 151, 249--281. Standard formulation of the trust-region subproblem (\S 2, eq.\ 2.3--2.7), Cauchy decrease, predicted / actual reduction ratio, radius update, and bound-constrained affine-scaled (Coleman--Li) trust region (\S 3, eq.\ 3.34--3.37).
+\end{itemize}
+\end{quote}
+
+\newpage
+\tableofcontents
+\newpage
+
+%======================================================================
+\section{Recap of the iSFS notation we inherit from the paper}
+%======================================================================
+
+We use the \textbf{exact symbols} from Xiang et al.\ (2013) \S 3.1. No new variables until \S 3.
+
+\paragraph{Variables.}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $S$ --- number of data sources (e.g., PET, MRI, CSF; so $S = 3$).
+  \item $m$ --- a profile index. A profile is the binary indicator of which sources are present, encoded as a decimal integer.
+  \item $\mathbf{pf}$ --- vector of profiles for all participants. $|\mathbf{pf}|$ is the number of distinct profiles.
+  \item $n_m$ --- number of samples in profile $m$.
+  \item $n$ --- number of rows of $\mathbf{X}$ in a generic context (the paper uses both $n$ and $n_m$).
+  \item $\mathbf{X}^i \in \mathbb{R}^{n \times p_i}$ --- data matrix for source $i$.
+  \item $\mathbf{X}^i_m$ --- data matrix $\mathbf{X}^i$ restricted to samples in profile $m$.
+  \item $\boldsymbol{\beta}^i \in \mathbb{R}^{p_i}$ --- feature coefficient block for source $i$. \textbf{Shared across profiles.}
+  \item $\boldsymbol{\beta} = (\boldsymbol{\beta}^1, \ldots, \boldsymbol{\beta}^S) \in \mathbb{R}^{p_1 + \ldots + p_S}$ --- full feature coefficient vector.
+  \item $\alpha^i_m$ --- scalar weight on source $i$ for profile $m$. \textbf{Profile-specific.}
+  \item $\boldsymbol{\alpha}_m = (\alpha^1_m, \ldots, \alpha^S_m) \in \mathbb{R}^S$ --- full source-weight vector for profile $m$.
+  \item $\mathbf{y}_m$ --- label vector for samples in profile $m$.
+  \item $\mathbf{L}(\cdot, \cdot)$ --- convex loss function (least-squares, logistic, etc.). The paper says: \emph{``L can be any convex loss function such as the least squares loss function or the logistic loss function and $n$ is number of rows of $\mathbf{X}$.''}
+  \item $\mathbf{R}_{\boldsymbol{\alpha}}, \mathbf{R}_{\boldsymbol{\beta}}$ --- regularizers on $\boldsymbol{\alpha}$ and $\boldsymbol{\beta}$.
+  \item $\lambda$ --- regularization strength on $\mathbf{R}_{\boldsymbol{\beta}}$.
+\end{itemize}
+
+\paragraph{Equation (14)} --- the iSFS objective:
+\begin{equation}
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}}\;\;\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f(\mathbf{X}_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf{y}_m) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\end{equation}
+\[
+\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1\;\;\forall\,m \in \mathbf{pf}
+\]
+
+\paragraph{Equation (15)} --- the per-profile data-fitting term:
+\begin{equation}
+f(\mathbf{X},\boldsymbol{\beta},\boldsymbol{\alpha},\mathbf{y}) \;=\; \frac{1}{n}\,\mathbf{L}\!\left(\sum_{i=1}^{S}\alpha^{i}\mathbf{X}^{i}\boldsymbol{\beta}^{i},\;\mathbf{y}\right)
+\end{equation}
+
+\paragraph{Equation (16)} --- the $\boldsymbol{\alpha}$ subproblem (when $\boldsymbol{\beta}$ is fixed). Decouples by profile:
+\begin{equation}
+\min_{\boldsymbol{\alpha}}\;\;\Big\|\sum_{i=1}^{S}\alpha^{i}\mathbf{X}^{i}\boldsymbol{\beta}^{i} - \mathbf{y}\Big\|_{2}^{2}
+\quad\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}) \leq 1
+\end{equation}
+
+\paragraph{Equation (17)} --- the $\boldsymbol{\beta}$ subproblem (when $\boldsymbol{\alpha}$ is fixed):
+\begin{equation}
+\min_{\boldsymbol{\beta}}\;\;g(\boldsymbol{\beta}) + \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta}),
+\qquad
+g(\boldsymbol{\beta}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\Big\|\sum_{i=1}^{S}\alpha^{i}_{m}\mathbf{X}^{i}_{m}\boldsymbol{\beta}^{i} - \mathbf{y}_m\Big\|_{2}^{2}
+\end{equation}
+
+\paragraph{Equation (18)} --- the gradient of $g$ for the $\boldsymbol{\beta}$ step (used by FISTA):
+\begin{equation}
+\nabla g(\boldsymbol{\beta}^{i}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{I}\!\left(m\,\&\,2^{S-i}\neq 0\right)\,(\alpha^{i}_{m}\mathbf{X}^{i}_{m})^{T}\!\Big(\sum_{j=1}^{S}\alpha^{j}_{m}\mathbf{X}^{j}_{m}\boldsymbol{\beta}^{j} - \mathbf{y}_m\Big)
+\end{equation}
+
+The bitwise indicator $\mathbf{I}(m \,\&\, 2^{S-i} \neq 0)$ equals $1$ iff source $i$ is present in profile $m$. This is a literal bit-test on the profile integer.
+
+\textbf{Algorithm 2 in the paper} is the BCD that alternates eq (16) and eq (17) until the objective stops decreasing. It is exactly the multi-convex BCD pattern from Aggarwal \S 4.10.2 --- convex in each block given the other fixed, monotonic decrease across the alternation.
+
+That is the entire toolkit we inherit. Everything below adds \textbf{one new variable $C$} and derives the corresponding new block update.
+
+%======================================================================
+\section{Why a cost-sensitive extension --- and why fixed $C$ is not enough}
+%======================================================================
+
+\subsection{Motivation}
+
+In Alzheimer's disease prediction (and most clinical settings), the minority class (e.g., progressive MCI converters) is rare. Standard iSFS minimizes average loss and quietly becomes majority-biased. The classical fix is \textbf{cost-sensitive learning}: assign higher misclassification penalty to minority-class errors. From Elkan (2001):
+\[
+\text{Total Cost} \;=\; C(0,1)\cdot\text{FN} \;+\; C(1,0)\cdot\text{FP},\qquad C(0,1) \gg C(1,0).
+\]
+
+For our setting, define a \textbf{per-class cost vector} $C = (C_1, \ldots, C_K)$ where $K$ is the number of classes ($K = 2$ for binary). Each sample's loss contribution is multiplied by $C_{y_j}$ --- the cost weight that corresponds to its class label.
+
+\subsection{Fixed $C$ (classical Elkan-style) as a reference point}
+
+\paragraph{The fixed-$C$ rule.} The standard ``inverse class frequency'' choice:
+\[
+C_k^{\,0} \;=\; \frac{N}{K \cdot n_k},\qquad k = 1, \ldots, K
+\]
+where:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $N = \sum_k n_k$ is the total sample count.
+  \item $n_k$ is the number of samples in class $k$.
+\end{itemize}
+
+This makes minority-class samples count more in the loss. For our running example with $n_- = 12$, $n_+ = 4$, $N = 16$, $K = 2$:
+\[
+C_-^{\,0} = \frac{16}{2\cdot 12} \approx 0.667,\qquad C_+^{\,0} = \frac{16}{2\cdot 4} = 2.0.
+\]
+The minority class gets $n_-/n_+ = 3\times$ the per-sample weight of the majority class.
+
+\paragraph{The cost-sensitive version of $\mathbf{L}$.} Promote the paper's loss function $\mathbf{L}$ to its class-weighted form:
+\[
+\mathbf{L}^{C}(\hat{\mathbf{y}},\mathbf{y}) \;=\; \frac{1}{2}\sum_{j=1}^{n} C_{y_{j}}\,(\hat{y}_{j} - y_{j})^{2}
+\]
+
+Plug this into the iSFS objective in place of $\mathbf{L}$. With $C$ fixed at $C^0$, the entire optimization remains in $(\boldsymbol{\alpha}, \boldsymbol{\beta})$:
+\[
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}}\;\;\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f^{C^{0}}(\mathbf{X}_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf{y}_m) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\]
+where
+\[
+f^{C}(\mathbf{X},\boldsymbol{\beta},\boldsymbol{\alpha},\mathbf{y}) \;=\; \frac{1}{n}\,\mathbf{L}^{C}\!\left(\sum_{i=1}^{S}\alpha^{i}\mathbf{X}^{i}\boldsymbol{\beta}^{i},\;\mathbf{y}\right).
+\]
+
+\textbf{Algorithm 2 from the paper runs unchanged} --- only the inside of $\mathbf{L}$ carries the $C^0$ weights.
+
+\subsection{Why fixed $C$ is not enough --- and what a bounded set buys us}
+
+Define the per-class loss contribution at the current $(\boldsymbol{\alpha}, \boldsymbol{\beta})$:
+\[
+L_k(\boldsymbol{\alpha},\boldsymbol{\beta}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\!\!\sum_{\substack{j: y_{m,j} = k}}\!(\hat{y}_{m,j} - y_{m,j})^{2}\;\ge\;0.
+\]
+
+The data-fitting part of the objective as a function of $C$ alone is
+\[
+\Phi_C(C) \;=\; \sum_{k=1}^{K} C_k\,L_k(\boldsymbol{\alpha},\boldsymbol{\beta}).
+\]
+
+This is \textbf{linear in $C$} with non-negative coefficients. Unconstrained, $\max_C \Phi_C$ is $+\infty$ and $\min_C \Phi_C$ is $-\infty$ (or $0$ if $C_k \ge 0$), so a ``fix $\boldsymbol{\alpha},\boldsymbol{\beta}$, solve $C$'' step is degenerate without a bounded feasible set. Classical cost-sensitive learning sidesteps the issue by fixing $C$ at a prior (Elkan 2001, Domingos 1999, King \& Zeng 2001, scikit-learn's \texttt{class\_weight='balanced'}).
+
+The DRO observation (Hu et al.\ 2018; Namkoong \& Duchi 2017) is that \textbf{any bounded neighbourhood of $C^0$ in a suitable norm removes the degeneracy}: linear-on-a-compact-convex set has a well-defined maximizer. The simplest such neighbourhood is a ball
+\[
+\mathcal B(C^0,\,\Delta) \;=\; \Big\{ C \in \mathbb{R}^K \;:\; \tfrac12\|C - C^0\|_2^2 \le \Delta \Big\}.
+\]
+
+Once we are inside a ball, we are in the native setting of \textbf{trust-region methods} (Yuan 2015, \S 2): the same ball that bounds the problem also governs an iterative step-length strategy. \S 4 uses this equivalence to turn the $C$-block into a proper TR iteration.
+
+%======================================================================
+\section{The cost-sensitive iSFS objective}
+%======================================================================
+
+\textbf{One new variable} beyond what the paper uses:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $C \in \mathbb{R}^K_{\ge 0}$ --- per-class cost vector. $K$ parameters total (just $2$ for binary classification).
+  \item $C^0 \in \mathbb{R}^K_{\ge 0}$ --- baseline (prior) cost vector. We use the rescaled inverse-frequency baseline (defined in \S 4).
+  \item $\Delta_{\max} > 0$ --- \textbf{maximum trust-region radius}: the squared-distance budget $\tfrac12\|C - C^0\|_2^2 \le \Delta_{\max}$ (equivalently, $\|C - C^0\|_2 \le \sqrt{2\Delta_{\max}}$). The TR iteration (\S 7) starts with a smaller working radius $\Delta_0 \le \Delta_{\max}$ and adapts it.
+  \item $\mathcal B(C^0,\Delta_{\max}) \;=\; \{C : \tfrac12\|C-C^0\|_2^2 \le \Delta_{\max}\}$ --- problem-level feasible ball for $C$.
+\end{itemize}
+
+\noindent\emph{Notation.} We use $\Delta$ (with indices) throughout for trust-region radii, following Yuan (2015, \S 2), and $r_k$ for the actual/predicted reduction ratio in the TR radius-update rule (Yuan denotes it $\rho_k$; we reserve $\rho$ for other uses).
+
+\paragraph{Cost-sensitive loss function} --- extends the paper's $\mathbf{L}$ by attaching the class-cost weight to each sample's residual:
+\begin{equation}
+\boxed{\;\mathbf{L}^{C}(\hat{\mathbf{y}},\mathbf{y}) \;=\; \frac{1}{2}\sum_{j=1}^{n} C_{y_{j}}\,(\hat{y}_{j} - y_{j})^{2}\;}
+\end{equation}
+
+Read this in three pieces:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $(\hat{y}_j - y_j)^2$ --- squared residual for sample $j$ (same as paper's least-squares).
+  \item $C_{y_j}$ --- look up the cost weight for sample $j$'s class label $y_j$. This is K-way indexing, \textbf{not} a per-sample free parameter. $C$ still has only $K$ total parameters.
+  \item $\sum_j$ --- sum over all samples.
+\end{itemize}
+
+When $C_k = 1$ for all $k$, $\mathbf{L}^C$ reduces to $\frac{1}{2}\|\hat{\mathbf{y}} - \mathbf{y}\|^2$, which is exactly the paper's least-squares $\mathbf{L}$.
+
+\paragraph{Cost-sensitive data-fitting term} --- extends eq (15) by replacing $\mathbf{L}$ with $\mathbf{L}^C$:
+\begin{equation}
+\boxed{\;f^{C}(\mathbf{X},\boldsymbol{\beta},\boldsymbol{\alpha},\mathbf{y}) \;=\; \frac{1}{n}\,\mathbf{L}^{C}\!\left(\sum_{i=1}^{S}\alpha^{i}\mathbf{X}^{i}\boldsymbol{\beta}^{i},\;\mathbf{y}\right)\;}
+\end{equation}
+
+\paragraph{Cost-sensitive iSFS objective} --- saddle-point extension of eq (14):
+\begin{equation}
+\boxed{\;
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}}\;\max_{C \in \mathcal B(C^0,\Delta_{\max}),\;C\ge 0}\;\;\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f^{C}(\mathbf{X}_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf{y}_m) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\;}
+\end{equation}
+\[
+\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1\;\;\forall\,m \in \mathbf{pf}
+\]
+
+\paragraph{Three things to read off:}
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{$\min$ over $(\boldsymbol{\alpha}, \boldsymbol{\beta})$, $\max$ over $C$.} The saddle-point structure used in DRO; $(\boldsymbol{\alpha},\boldsymbol{\beta})$ is trained against the worst-case class re-weighting within the ball.
+  \item \textbf{$C$ lives in a ball around $C^0$.} $C$ is restricted to be within squared-distance $\Delta_{\max}$ of the prior $C^0$ and non-negative. The ball alone is enough to bound $\Phi_C$ because the objective is linear in $C$.
+  \item \textbf{The only changes from eq (14):} new variable $C$; $f \to f^C$; new constraint $C \in \mathcal B(C^0,\Delta_{\max}) \cap \mathbb{R}^K_{\ge 0}$. Everything else is identical.
+\end{enumerate}
+
+\textbf{Why a max over $C$, not a min.} A pure-min framing in $C$ assigns less weight to the harder class, the opposite of cost-sensitive intent. The max framing forces the model to do well against whichever class the data currently makes hard.
+
+%======================================================================
+\section{The feasible set for $C$: a pure trust-region ball}
+%======================================================================
+
+The feasible set for $C$ in the problem statement (\S 3) is a single ball around the prior $C^0$:
+\[
+\mathcal B(C^0, \Delta_{\max}) \cap \mathbb{R}^K_{\ge 0}
+\;=\; \Big\{\,C \in \mathbb{R}^K_{\ge 0} \;:\; \tfrac12\|C - C^0\|_2^2 \leq \Delta_{\max}\,\Big\}.
+\]
+
+\subsection{Why the ball alone is enough}
+
+A ball of finite squared-radius $\Delta_{\max}$ around a finite center $C^0$ bounds every component of $C$, so $\max_{C \in \mathcal B(C^0,\Delta_{\max})} L^\top C$ is attained at a unique point on the boundary (Cauchy--Schwarz). The ball is the problem-level feasible set, and the same ball is the native geometric object for iterative trust-region optimization (Yuan 2015, \S 2). One ball plays two roles: outer feasibility in $\max_C$, inner trust region per TR step.
+
+\subsection{The baseline $C^0$ (rescaled inverse frequency)}
+
+Same prior as before:
+\[
+C_k^{\,0} \;=\; \frac{K \cdot (1/n_k)}{\displaystyle\sum_{j=1}^{K}(1/n_j)}.
+\]
+For $n_- = 12,\ n_+ = 4,\ K = 2$: $C^0 = (0.5,\,1.5)$. The rescaling is no longer forced by any constraint, but we keep it so the $\Delta_{\max} \to 0$ limit recovers the standard balanced baseline used by \texttt{class\_weight=`balanced'}.
+
+\subsection{Problem radius $\Delta_{\max}$ vs.\ working radius $\Delta_k$}
+
+Two distinct quantities, both in squared-distance units:
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $\Delta_{\max}$ --- \textbf{problem-level} TR radius appearing in the saddle-point objective (\S 3). A hyperparameter; the maximum deviation from $C^0$ ever allowed.
+  \item $\Delta_k$ --- \textbf{iteration} TR radius at step $k$ of the $C$-block. Starts at some $\Delta_0 \le \Delta_{\max}$, is adapted by the Yuan (2015) actual/predicted ratio rule, and is clipped to $[\Delta_{\min},\,\Delta_{\max}]$.
+\end{itemize}
+
+$\Delta_{\max}$ controls \emph{how far} the adversarial $C$ is allowed to move. $\Delta_k$ controls \emph{how big each step} is inside that allowance. This is the standard separation in trust-region methods (Yuan 2015, \S 2).
+
+\subsection{What the radius means in plain terms}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{$\Delta_{\max}$ value} & \textbf{behavior of $C$} \\
+\midrule
+$\Delta_{\max} \to 0$ & $C$ is pinned to $C^0$ --- recovers classical fixed cost-sensitive learning. \\
+$\Delta_{\max}$ small & $C$ stays close to $C^0$: ``almost-classical'' adaptation. \\
+$\Delta_{\max}$ moderate & $C$ adapts to per-class loss but is anchored to the prior. \\
+$\Delta_{\max}$ large & $C$ is free to roam up to the non-negative-orthant boundary. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Tune $\Delta_{\max}$ by cross-validation. $\Delta_0$ is typically set to $\Delta_{\max}$ or a modest fraction of it; the Yuan rule shrinks it automatically if the linear model over-predicts reduction.
+
+\subsection{Where this comes from --- research}
+
+Two orthogonal streams inform this construction:
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Distributionally robust optimization (DRO).} Hu, Niu, Sato, Sugiyama (2018, ICML) and Namkoong \& Duchi (2017, NeurIPS) justify an $\ell_2$ / $\chi^2$ ball on a per-class re-weighting vector as the principled way to \emph{learn} cost weights instead of fixing them. The ball is the constraint set; the ``adversary'' inside the $\max$ picks the worst re-weighting within it.
+  \item \textbf{Trust-region methods.} Yuan (2015, Math.\ Program.) surveys the canonical TR recipe: build a local model $m_k(d)$ around the current iterate, trust it only within a ball of radius $\Delta_k$, accept or reject the step via the ratio of actual to predicted reduction, and adapt $\Delta_k$ (eq.\ 2.3--2.7, p.\ 252--253). \S 3 of the survey extends this to bound-constrained problems via the Coleman--Li affine-scaled ellipsoidal TR (eq.\ 3.34--3.37, p.\ 262), which is how we handle $C \ge 0$.
+\end{itemize}
+
+\subsection{Summary}
+
+Problem level: $C$ lives in a single ball around $C^0$ (plus $C \ge 0$). Algorithmically, $C$ is updated by a trust-region iteration whose radius $\Delta_k$ starts at $\Delta_0 \le \Delta_{\max}$ and adapts step-by-step. \textbf{Before} applying TR to $C$, the next section (\S 5) presents the general trust-region framework as it appears in Yuan (2015), in standard optimization notation, so that the reader can verify the machinery independently of our cost-sensitive application.
+
+%======================================================================
+\section{Trust-region optimization: the general framework (Yuan 2015)}
+\label{sec:tr-general}
+%======================================================================
+
+This section reproduces the core trust-region (TR) algorithm from Yuan, Y.\ (2015), \emph{Recent advances in trust-region algorithms}, Math.\ Program.\ Ser.\ B 151, 249--281. Everything here is in \textbf{standard optimization notation} --- minimizing a smooth function $f : \mathbb{R}^n \to \mathbb{R}$, with no reference to cost-sensitive learning or iSFS. The purpose is to establish the equations we will use in \S 7 when we apply TR to the $C$-block.
+
+\subsection{The problem and the idea}
+
+We want to solve
+\[
+\min_{x \in \mathbb{R}^n}\; f(x)
+\]
+where $f$ is smooth (twice continuously differentiable). At the current iterate $x_k$ we know $f(x_k)$, the gradient $g_k = \nabla f(x_k)$, and optionally a Hessian or Hessian-surrogate $B_k \approx \nabla^2 f(x_k)$.
+
+The \textbf{trust-region idea} (Yuan \S 2, p.\ 251--253): instead of taking a full Newton or gradient step, build a \emph{local model} $m_k(d)$ of $f(x_k + d)$ around $d = 0$, trust it only within a ball of radius $\Delta_k$, and solve:
+\begin{equation}
+\boxed{\;
+\min_{d \in \mathbb{R}^n}\; m_k(d) \;=\; f(x_k) + g_k^\top d + \tfrac12\,d^\top B_k\,d
+\qquad\text{s.t.}\quad \|d\|_2 \;\le\; \Delta_k.
+\;}
+\tag{Yuan, eq.\ 2.3--2.4}
+\end{equation}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $m_k(d)$ is a quadratic model that matches $f$ at $d = 0$: $m_k(0) = f(x_k)$, $\nabla m_k(0) = g_k$.
+  \item $B_k$ can be the exact Hessian $\nabla^2 f(x_k)$, a quasi-Newton approximation (BFGS, L-BFGS), or even $B_k = 0$ (giving a \emph{linear model}).
+  \item $\Delta_k > 0$ is the \textbf{trust-region radius}: how far we allow $d$ to go. It is adapted at every iteration based on how well the model predicted the actual function value.
+\end{itemize}
+
+\subsection{Predicted reduction, actual reduction, and the ratio $r_k$}
+
+After solving the subproblem to get $d_k$, we compare what the model predicted to what actually happened (Yuan eq.\ 2.7, p.\ 253):
+\begin{equation}
+\boxed{\;
+\text{Pred}_k \;=\; m_k(0) - m_k(d_k),\qquad
+\text{Ared}_k \;=\; f(x_k) - f(x_k + d_k),\qquad
+r_k \;=\; \frac{\text{Ared}_k}{\text{Pred}_k}.
+\;}
+\tag{Yuan, eq.\ 2.7}
+\end{equation}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $\text{Pred}_k$ is the reduction the model predicts: always $\ge 0$ if $d_k$ is a descent direction for $m_k$.
+  \item $\text{Ared}_k$ is the actual reduction in the true function $f$.
+  \item $r_k$ measures agreement between model and reality:
+    \begin{itemize}
+      \item $r_k \approx 1$: model is accurate. Trust it more $\to$ expand $\Delta_k$.
+      \item $r_k$ small or negative: model is inaccurate. Trust it less $\to$ shrink $\Delta_k$.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Step acceptance and radius update}
+
+\paragraph{Step acceptance.} Accept $x_{k+1} = x_k + d_k$ if $r_k \ge \tau_1$; otherwise reject the step and keep $x_{k+1} = x_k$ (Yuan \S 2, p.\ 253).
+
+\paragraph{Radius update rule.} Adapt $\Delta_k$ based on $r_k$ (Yuan eq.\ 2.8--2.9, p.\ 253):
+\begin{equation}
+\boxed{\;
+\Delta_{k+1} \;=\;
+\begin{cases}
+\gamma_2\,\Delta_k & \text{if } r_k \ge \tau_2 \quad\text{(model is very accurate: expand)}\\[3pt]
+\Delta_k & \text{if } \tau_1 \le r_k < \tau_2 \quad\text{(model is adequate: keep)}\\[3pt]
+\gamma_1\,\Delta_k & \text{if } r_k < \tau_1 \quad\text{(model is poor: shrink)}
+\end{cases}
+\;}
+\tag{Yuan, eq.\ 2.8--2.9}
+\end{equation}
+with standard parameters (used throughout Yuan and in our Algorithm 3):
+\[
+\tau_1 = 0.25,\qquad \tau_2 = 0.75,\qquad \gamma_1 = 0.5,\qquad \gamma_2 = 2.
+\]
+
+\subsection{The Cauchy decrease condition}
+
+For convergence theory, the TR step $d_k$ must achieve at least a fixed fraction of the \textbf{Cauchy point} --- the steepest-descent step clipped to the ball. The sufficient-descent condition is (Yuan eq.\ 2.5, p.\ 252):
+\begin{equation}
+\boxed{\;
+\text{Pred}_k \;\ge\; c\,\|g_k\|_2\,\min\!\left\{\Delta_k,\;\frac{\|g_k\|_2}{\|B_k\|_2}\right\},\qquad c > 0.
+\;}
+\tag{Yuan, eq.\ 2.5}
+\end{equation}
+
+When $B_k = 0$ (our case), $\|B_k\|_2 = 0$, so the $\min$ reduces to $\Delta_k$:
+\[
+\text{Pred}_k \;\ge\; c\,\|g_k\|_2\,\Delta_k.
+\]
+Since $\text{Pred}_k = g_k^\top d_k = \|g_k\|_2 \cdot \Delta_k$ for the Cauchy step of a linear model, this condition is always satisfied with $c = 1$.
+
+\subsection{Special case: linear model ($B_k = 0$)}
+
+When the model is purely linear ($B_k = 0$), the quadratic term vanishes:
+\[
+m_k(d) \;=\; f(x_k) + g_k^\top d.
+\]
+The TR subproblem becomes
+\[
+\min_{\|d\|_2 \le \Delta_k}\;\; g_k^\top d.
+\]
+The minimizer points along $-g_k$ (steepest descent direction) with step length $\Delta_k$:
+\begin{equation}
+\boxed{\;d_k^\star \;=\; -\,\Delta_k\,\frac{g_k}{\|g_k\|_2}.}
+\tag{Cauchy step, linear model}
+\end{equation}
+
+Verify: $\|d_k^\star\|_2 = \Delta_k$ (on the boundary). Predicted reduction: $\text{Pred}_k = -g_k^\top d_k^\star = \Delta_k\,\|g_k\|_2 > 0$.
+
+For a \textbf{maximization} problem $\max_x f(x)$ (equivalently $\min_x -f(x)$), the step reverses:
+\[
+d_k^\star \;=\; +\,\Delta_k\,\frac{g_k}{\|g_k\|_2}
+\]
+and the ratio uses $r_k = (f(x_k + d_k) - f(x_k))/(m_k(d_k) - m_k(0))$, comparing actual increase to predicted increase.
+
+\paragraph{Why the linear model is not trivial in an alternating scheme.} If $f$ were truly linear, one step to the boundary of $\Delta_k$ would solve the subproblem exactly ($r_k = 1$ always) and there would be no reason to iterate. The value of TR emerges when $f$ is \emph{approximately} linear locally but \emph{nonlinear globally} --- i.e., the gradient changes as we move. In block coordinate descent, the gradient of one block's objective changes whenever the other blocks are re-optimized. This is exactly our setting: $\nabla_C \Phi = L$ changes after each Block A re-solve of $(\boldsymbol\alpha,\boldsymbol\beta)$. The TR framework handles this gracefully by testing each step's prediction quality and adapting the step size.
+
+\subsection{The full TR algorithm (general form)}
+
+\begin{algorithm}[H]
+\caption{General Trust-Region Algorithm (Yuan 2015, \S 2)}
+\begin{algorithmic}[1]
+\Require $f$, starting point $x_0$, initial radius $\Delta_0 > 0$, thresholds $\tau_1 < \tau_2$, multipliers $0 < \gamma_1 < 1 < \gamma_2$
+\Ensure $x^\star$ (approximate minimizer)
+\For{$k = 0, 1, 2, \ldots$}
+    \State Compute gradient $g_k = \nabla f(x_k)$ and (optionally) Hessian-surrogate $B_k$.
+    \State Build model $m_k(d) = f(x_k) + g_k^\top d + \tfrac12 d^\top B_k d$.
+    \State Solve the TR subproblem: $d_k \gets \arg\min_{\|d\|_2 \le \Delta_k} m_k(d)$.
+    \State Compute $\text{Ared}_k = f(x_k) - f(x_k + d_k)$ and $\text{Pred}_k = m_k(0) - m_k(d_k)$.
+    \State $r_k \gets \text{Ared}_k / \text{Pred}_k$.
+    \If{$r_k \ge \tau_1$}
+        \State Accept: $x_{k+1} \gets x_k + d_k$.
+    \Else
+        \State Reject: $x_{k+1} \gets x_k$.
+    \EndIf
+    \State Update radius:
+    $\Delta_{k+1} \gets \begin{cases}\gamma_2\Delta_k & r_k \ge \tau_2 \\ \Delta_k & \tau_1 \le r_k < \tau_2 \\ \gamma_1\Delta_k & r_k < \tau_1\end{cases}$
+    \If{$\|g_k\|_2 < \epsilon$}
+        \State \Return $x_{k+1}$.
+    \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Convergence.} Under the Cauchy-decrease condition (eq.\ 2.5), Yuan (2015, Theorem 2.1) proves:
+\[
+\liminf_{k \to \infty}\;\|g_k\|_2 \;=\; 0.
+\]
+The iterates converge to a first-order stationary point of $f$. If $B_k$ also captures second-order information, superlinear convergence rates are possible (Yuan \S 2.2).
+
+\subsection{Extension to bound constraints: Coleman--Li scaling (Yuan \S 3.3)}
+
+For
+\[
+\min_{x}\; f(x) \qquad\text{s.t.}\quad \ell \;\le\; x \;\le\; u
+\]
+where $\ell, u \in (\mathbb{R} \cup \{-\infty, +\infty\})^n$ are elementwise bounds, Coleman \& Li (1996) replace the Euclidean ball with an \textbf{affine-scaled ellipsoid} that shrinks in directions where the iterate is near a bound (Yuan eq.\ 3.34--3.37, p.\ 262):
+
+\paragraph{Step 1 --- define the scaling vector.} For each component $i$:
+\begin{equation}
+\boxed{\;v^{(i)}(x) \;=\;
+\begin{cases}
+x_i - \ell_i & \text{if } (\nabla f(x))_i \ge 0 \text{ and } \ell_i > -\infty \\[3pt]
+u_i - x_i & \text{if } (\nabla f(x))_i < 0 \text{ and } u_i < +\infty \\[3pt]
++\infty & \text{otherwise}
+\end{cases}
+\;}
+\tag{Yuan, eq.\ 3.34--3.35}
+\end{equation}
+
+Interpretation: $v^{(i)}$ is the distance from $x_i$ to the nearest \emph{active} bound (the one the gradient is pushing toward). If the gradient pushes away from any finite bound, $v^{(i)} = +\infty$ (no scaling needed).
+
+\paragraph{Step 2 --- build the scaling matrix.}
+\begin{equation}
+D_k \;=\; \mathrm{diag}\!\Big(\sqrt{|v^{(1)}(x_k)|},\;\ldots,\;\sqrt{|v^{(n)}(x_k)|}\Big).
+\tag{Yuan, eq.\ 3.36}
+\end{equation}
+
+\paragraph{Step 3 --- replace the Euclidean ball with the ellipsoid.}
+\begin{equation}
+\boxed{\;\|D_k^{-1}\,d\|_2 \;\le\; \Delta_k\qquad\text{replaces}\qquad \|d\|_2 \;\le\; \Delta_k.}
+\tag{Yuan, eq.\ 3.37}
+\end{equation}
+
+Net effect: as $x_i \to \ell_i$ (or $u_i$), $v^{(i)} \to 0$, so $D_k^{(i,i)} \to 0$, and $|d_i| / D_k^{(i,i)} \to \infty$ unless $d_i \to 0$ too. The iterate is automatically prevented from crossing the bound. No explicit projection or clipping is needed.
+
+The rest of the TR algorithm (model, ratio, radius update) is identical to the unconstrained case --- only the ball shape changes. The Cauchy decrease condition (eq.\ 2.5) also carries over with $\|\cdot\|_{D_k^{-1}}$ in place of $\|\cdot\|_2$.
+
+\subsection{Connection to our $C$-block}
+
+\S 7 applies this framework to the cost-sensitive $C$-block as follows:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{general TR} & \textbf{our $C$-block} & \textbf{why} \\
+\midrule
+$x_k$ & $C^{(k)}$ & current iterate \\
+$f(x)$ & $-F(C) = -\min_{\alpha,\beta}\Phi(\alpha,\beta,C)$ & we maximize $F$, so minimize $-F$ \\
+$g_k = \nabla f$ & $-L(\alpha_k^\star,\beta_k^\star)$ & gradient of $-F$ by envelope theorem \\
+$B_k$ & $0$ & linear model (no Hessian) \\
+$\Delta_k$ & working TR radius (squared-distance budget) & adapted by ratio rule \\
+$\ell \le x \le u$ & $C \ge 0$ (lower bound $\ell = 0$, no upper bound) & Coleman--Li for non-negativity \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\emph{Convention note.} Yuan uses $\|d\|_2 \le \Delta_k$ where $\Delta_k$ is the Euclidean radius. Throughout the rest of this document we use $\tfrac12\|d\|_2^2 \le \Delta_k$, treating $\Delta_k$ as a \emph{squared-distance budget} so it has the same units as $\Delta_{\max}$ in the problem statement (\S 3). The two conventions are related by $\Delta_k^{\mathrm{Yuan}} = \sqrt{2\Delta_k^{\mathrm{ours}}}$. All equations in \S 7 and Algorithm 3 use our squared-distance convention.
+
+%======================================================================
+\section{Step 1 --- fix $C$, solve $(\boldsymbol{\alpha}, \boldsymbol{\beta})$}
+%======================================================================
+
+\begin{definition*}[FISTA]
+\textbf{FISTA} = \emph{Fast Iterative Shrinkage-Thresholding Algorithm} (Beck \& Teboulle, 2009, \emph{SIAM Journal on Imaging Sciences}). It is the standard \textbf{accelerated proximal gradient method} for solving optimization problems of the form
+\[
+\min_{x}\;\;f(x) + g(x)
+\]
+where $f$ is convex and smooth (with Lipschitz-continuous gradient $\nabla f$) and $g$ is convex (possibly non-smooth) but has an efficient \textbf{proximal operator}
+\[
+\mathrm{prox}_{tg}(v) \;=\; \arg\min_{x}\Big\{\,\tfrac{1}{2}\|x - v\|^2 + t\cdot g(x)\,\Big\}.
+\]
+Each FISTA step takes a gradient step on $f$, applies the proximal operator of $g$, and uses Nesterov-style momentum to accelerate. It converges at rate $O(1/k^2)$ --- strictly better than vanilla gradient descent's $O(1/k)$. The original iSFS Algorithm 2 in Xiang et al.\ (2013) cites Beck \& Teboulle and uses FISTA for both eq (16) (with $f$ = least-squares, $g$ = unit-ball indicator) and eq (17) (with $f$ = $g(\boldsymbol{\beta})$, $g$ = $\lambda \mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})$). We use the same algorithm here, modified only by the per-sample cost weight $C_{y_{m,j}}$ that appears inside $f$.
+\end{definition*}
+
+Hold $C$ fixed inside $f^C$. The cost-sensitive iSFS problem reduces to a $C$-weighted version of the paper's eq (14):
+\[
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}}\;\;\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f^{C}(\mathbf{X}_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf{y}_m) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\]
+
+For least-squares loss the inner expansion is:
+\[
+\mathbf{L}^{C}\!\left(\sum_{i}\alpha^{i}_{m}\mathbf{X}^{i}_{m}\boldsymbol{\beta}^{i},\;\mathbf{y}_m\right) \;=\; \frac{1}{2}\sum_{j=1}^{n_m} C_{y_{m,j}}\!\left(\hat{y}_{m,j} - y_{m,j}\right)^{2}
+\]
+
+\paragraph{One auxiliary definition:}
+\[
+\hat{y}_{m,j}(\boldsymbol{\alpha}_m,\boldsymbol{\beta}) \;=\; \sum_{i=1}^{S}\alpha^{i}_{m}\,\mathbf{x}^{i}_{m,j}\!\cdot\boldsymbol{\beta}^{i}
+\]
+
+Variables:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $j \in \{1, \ldots, n_m\}$ --- sample index inside profile $m$.
+  \item $y_{m,j}$ --- the class label of sample $j$ in profile $m$.
+  \item $\mathbf{x}^i_{m,j}$ --- the $j$-th row of $\mathbf{X}^i_m$, i.e., the source-$i$ feature vector of sample $j$ in profile $m$.
+  \item $\hat{y}_{m,j}$ --- the model prediction for sample $j$ in profile $m$.
+\end{itemize}
+
+$\hat{y}_{m,j}$ is just the per-sample form of $\sum_i \alpha^i_m \mathbf{X}^i_m \boldsymbol{\beta}^i$ from eq (15). It is linear in $\boldsymbol{\alpha}_m$ (with $\boldsymbol{\beta}$ fixed) and linear in $\boldsymbol{\beta}$ (with $\boldsymbol{\alpha}_m$ fixed).
+
+The inner block is itself a 2-block alternation, exactly Algorithm 2 of the paper, with one change: every squared residual carries $C_{y_{m,j}}$.
+
+\subsection{Inner step 1a --- $\boldsymbol{\alpha}$ update (per profile)}
+
+For each profile $m$, the cost-sensitive version of paper eq (16):
+\begin{equation}
+\boxed{\;\min_{\boldsymbol{\alpha}_m}\;\;\frac{1}{2}\sum_{j=1}^{n_m} C_{y_{m,j}}\!\left(\sum_{i=1}^{S}\alpha^{i}_{m}\,\mathbf{x}^{i}_{m,j}\!\cdot\boldsymbol{\beta}^{i} \;-\; y_{m,j}\right)^{\!2}\quad\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1\;}
+\end{equation}
+
+\textbf{Sanity check.} When $C_k = 1$ for all $k$, every $C_{y_{m,j}}$ becomes $1$, the inner sum collapses to $\frac{1}{2}\|\sum_i \alpha^i_m \mathbf{X}^i_m \boldsymbol{\beta}^i - \mathbf{y}_m\|^2$, and we recover paper eq (16) verbatim. \checkmark
+
+\paragraph{Gradient (used by FISTA / proximal gradient).} Take the partial with respect to $\alpha^i_m$:
+\[
+\frac{\partial}{\partial \alpha^{i}_{m}}\!\left[\tfrac{1}{2}\sum_{j=1}^{n_m} C_{y_{m,j}}(\hat{y}_{m,j} - y_{m,j})^{2}\right] \;=\; \sum_{j=1}^{n_m} C_{y_{m,j}}\,(\hat{y}_{m,j} - y_{m,j})\,\big(\mathbf{x}^{i}_{m,j}\!\cdot\boldsymbol{\beta}^{i}\big)
+\]
+
+Read this in three pieces:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $(\hat{y}_{m,j} - y_{m,j})$ --- residual for sample $j$.
+  \item $C_{y_{m,j}}$ --- class-cost weight for sample $j$ (this is the cost-sensitive entry point).
+  \item $(\mathbf{x}^i_{m,j} \cdot \boldsymbol{\beta}^i)$ --- partial of $\hat{y}_{m,j}$ with respect to $\alpha^i_m$.
+\end{itemize}
+
+When $C \equiv 1$ the $C$ factors disappear and this is the gradient of paper eq (16). \checkmark
+
+The unit-ball constraint $\mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1$ is handled by projection inside FISTA, exactly as in the paper's discussion of eq (16).
+
+\subsection{Inner step 1b --- $\boldsymbol{\beta}$ update (global)}
+
+Stack profiles. The cost-sensitive version of paper's $g$ (eq 17):
+\[
+g^{C}(\boldsymbol{\beta}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\sum_{j=1}^{n_m} C_{y_{m,j}}\!\left(\hat{y}_{m,j} - y_{m,j}\right)^{2}
+\]
+
+The $\boldsymbol{\beta}$ subproblem:
+\begin{equation}
+\boxed{\;\min_{\boldsymbol{\beta}}\;\;g^{C}(\boldsymbol{\beta}) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})\;}
+\end{equation}
+
+\paragraph{Gradient with respect to $\boldsymbol{\beta}^i$} --- cost-sensitive version of paper eq (18):
+\begin{equation}
+\boxed{\;\nabla g^{C}(\boldsymbol{\beta}^{i}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{I}\!\left(m\,\&\,2^{S-i}\neq 0\right)\sum_{j=1}^{n_m} C_{y_{m,j}}\,(\hat{y}_{m,j} - y_{m,j})\,\alpha^{i}_{m}\,\mathbf{x}^{i}_{m,j}\;}
+\end{equation}
+
+Variables in this expression:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $\mathbf{I}(m \,\&\, 2^{S-i} \neq 0)$ --- bitwise indicator from eq (18) of the paper. Equals $1$ iff source $i$ is present in profile $m$. \textbf{Identical to the paper.}
+  \item $\alpha^i_m \mathbf{x}^i_{m,j}$ --- the source-$i$ contribution from sample $j$ in profile $m$.
+  \item $(\hat{y}_{m,j} - y_{m,j})$ --- residual.
+  \item $C_{y_{m,j}}$ --- class-cost weight on the residual.
+\end{itemize}
+
+Compare to the paper's eq (18):
+\[
+\nabla g(\boldsymbol{\beta}^{i}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{I}\!\left(m\,\&\,2^{S-i}\neq 0\right)\,(\alpha^{i}_{m}\mathbf{X}^{i}_{m})^{T}\!\Big(\sum_{j}\alpha^{j}_{m}\mathbf{X}^{j}_{m}\boldsymbol{\beta}^{j} - \mathbf{y}_m\Big)
+\]
+
+The only difference: each per-sample term carries an extra $C_{y_{m,j}}$ factor. With $C \equiv 1$ the two gradients are identical. \checkmark
+
+The $\boldsymbol{\beta}$ subproblem is solved by accelerated gradient (FISTA), exactly as in Algorithm 2 of the paper. \textbf{No new machinery --- only the gradient picks up the $C_{y_{m,j}}$ weight.}
+
+%======================================================================
+\section{Step 2 --- fix $(\boldsymbol{\alpha}, \boldsymbol{\beta})$, solve $C$ by a trust-region iteration}
+%======================================================================
+
+The $C$-block is solved by an iterative trust-region (TR) procedure in the sense of Yuan (2015, \S 2). Because the data-fitting term is linear in $C$, a single TR step has a closed-form inner solve; iteration matters at the outer level, where re-solving Block A at each new $C$ makes the reduced objective genuinely nonlinear in $C$.
+
+\subsection{Reduction to a linear function of $C$}
+
+Group every per-sample term by the class label $y_{m,j}$. Define for each $k \in \{1, \ldots, K\}$:
+\begin{equation}
+\boxed{\;L_k(\boldsymbol{\alpha},\boldsymbol{\beta}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\!\!\sum_{\substack{j=1,\ldots,n_m \\ y_{m,j} = k}}\!\!(\hat{y}_{m,j} - y_{m,j})^{2}\;}
+\end{equation}
+
+$L_k$ is the \textbf{per-class loss coefficient}. With $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ fixed, it is just a positive number --- the total residual-squared contribution from samples of class $k$, weighted by the same $(1/|\mathbf{pf}|)(1/n_m)$ factors that appear in the iSFS objective.
+
+The data-fitting term is then \textbf{linear in $C$}:
+\[
+\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{L}^{C}(\cdots) \;=\; \sum_{k=1}^{K} C_k\,L_k(\boldsymbol{\alpha},\boldsymbol{\beta})
+\]
+
+So at any current $C$ the $C$-block becomes (with $(\boldsymbol\alpha,\boldsymbol\beta)$ fixed):
+\begin{equation}
+\boxed{\;\max_{C \in \mathcal B(C^0,\Delta_{\max}),\;C\ge 0}\;\;\Phi_C(C)\;=\;\sum_{k=1}^{K} C_k\,L_k\;}
+\end{equation}
+
+The function is linear in $C$, so its gradient is $\nabla \Phi_C = L \ge 0$.
+
+\subsection{TR-L: linear model with adaptive radius}
+
+We solve this subproblem by the Yuan (2015) trust-region recipe, using a \textbf{linear local model}. At TR iterate $k$ with current cost vector $C^{(k)}$ and working radius $\Delta_k$, define
+\begin{equation}
+m_k(d) \;=\; \Phi_C(C^{(k)}) \;+\; L_k^\top d,\qquad L_k \;=\; L(\boldsymbol\alpha^{(k)},\boldsymbol\beta^{(k)})
+\end{equation}
+where $L_k$ is the per-class loss vector evaluated at the \emph{current} $(\boldsymbol\alpha^{(k)},\boldsymbol\beta^{(k)})$. (If we re-solve Block A inside the TR loop, $L_k$ changes with $k$; if we only recompute it at outer BCD boundaries, $L_k \equiv L$ within a block.)
+
+\paragraph{TR subproblem.} Maximize $m_k$ over a $\Delta_k$-ball, respecting the problem-level ball and $C \ge 0$:
+\begin{equation}
+\boxed{\;d_k^\star \;=\; \arg\max_{d}\;\;L_k^\top d\qquad\text{s.t.}\;\;\tfrac12\|d\|_2^2 \le \Delta_k,\;\;C^{(k)}+d \ge 0,\;\;\tfrac12\|C^{(k)}+d-C^0\|_2^2 \le \Delta_{\max}.\;}
+\end{equation}
+
+Without the bound and outer-ball constraints, the closed form is Yuan's Cauchy step for linear models:
+\[
+d_k^{\mathrm{lin}} \;=\; \sqrt{2\Delta_k}\;\frac{L_k}{\|L_k\|_2}.
+\]
+With the two additional constraints, we clip $d_k^\star$ to the intersection of (i) the $\Delta_k$-ball, (ii) the non-negative orthant shifted by $C^{(k)}$, and (iii) the $\Delta_{\max}$-ball around $C^0$. For $K = 2$ this intersection is a one-dimensional line segment along $L_k/\|L_k\|_2$ and the clip is one scalar \texttt{max/min}. See \S 7.4 for the active-set projection that handles bounds rigorously (the Coleman--Li scaling route).
+
+\paragraph{Ratio test and radius update (Yuan 2015, eq.\ 2.7).}
+\begin{equation}
+r_k \;=\; \frac{\Phi_C(C^{(k)} + d_k^\star) - \Phi_C(C^{(k)})}{m_k(d_k^\star) - m_k(0)}.
+\end{equation}
+For a linear model $m_k$ and a linear $\Phi_C$ (with $(\boldsymbol\alpha,\boldsymbol\beta)$ held fixed within the block), numerator and denominator are both exactly $L_k^\top d_k^\star$, so $r_k = 1$ identically. This is the expected behavior: when the model is exact, every step is accepted and the working radius can grow. The non-trivial use of $r_k$ is in the \textbf{outer} BCD loop (Algorithm 3), where re-solving Block A for the new $C$ changes $L$ --- then the actual reduction (using the re-optimized $(\boldsymbol\alpha,\boldsymbol\beta)$) differs from the linear-model prediction, and $r_k$ becomes informative.
+
+Radius update (standard thresholds $\tau_1=0.25,\ \tau_2=0.75,\ \gamma_1=0.5,\ \gamma_2=2$, with $\Delta_k$ clipped to $[\Delta_{\min},\,\Delta_{\max}]$):
+\begin{equation}
+\Delta_{k+1} \;=\;\min\!\Big(\Delta_{\max},\;\max\!\big(\Delta_{\min},\;\mathrm{rule}(r_k,\Delta_k)\big)\Big),\quad
+\mathrm{rule}(r_k,\Delta_k) \;=\; \begin{cases}\gamma_2\Delta_k & r_k \ge \tau_2\\ \Delta_k & \tau_1 \le r_k < \tau_2\\ \gamma_1\Delta_k & r_k < \tau_1\end{cases}
+\end{equation}
+
+\paragraph{Step acceptance.} Accept $C^{(k+1)} = C^{(k)} + d_k^\star$ if $r_k \ge \tau_1$; otherwise $C^{(k+1)} = C^{(k)}$ (Yuan 2015, \S 2 step-acceptance rule).
+
+\subsection{Bound handling via Coleman--Li affine scaling (Yuan 2015, \S 3)}
+
+To respect $C \ge 0$ in a principled way (rather than post-hoc clipping), use the Coleman--Li scaling matrix
+\[
+D_k \;=\; \mathrm{diag}\!\left(\sqrt{|v^{(i)}(C^{(k)})|}\right),\qquad
+v^{(i)}(C) \;=\; \begin{cases} C_i & L_i > 0 \text{ and } C_i \text{ has lower bound } 0 \\ +\infty & \text{otherwise} \end{cases}
+\]
+and replace the Euclidean TR with the ellipsoidal TR
+\[
+\tfrac12\|D_k^{-1} d\|_2^2 \;\le\; \Delta_k.
+\]
+This is eq.\ 3.34--3.37 of the Yuan survey. The net effect: as any component $C_i^{(k)}$ approaches its lower bound $0$, the effective step size in direction $i$ shrinks automatically, so the iterate cannot cross the bound. For $K = 2$ this reduces to a two-line scalar rule.
+
+\subsection{Sanity checks}
+
+\paragraph{Check 1 --- direction is cost-sensitive.} Because $L \ge 0$ componentwise with $L_k > 0$ for any class actually incurring loss, $d_k^{\mathrm{lin}} = \sqrt{2\Delta_k}\,L/\|L\|_2 \ge 0$. Every component of $C$ increases on a TR step, with the class that currently contributes the most loss gaining the most weight. \checkmark
+
+\paragraph{Check 2 --- $\Delta_{\max} \to 0$ recovers fixed cost-sensitive learning.} If $\Delta_{\max} \to 0$, the outer ball pins $C$ to $C^0$ and every $\Delta_k \le \Delta_{\max}$ also vanishes, so $d_k^\star \to 0$. $C$ is frozen at the inverse-frequency baseline. \checkmark
+
+\paragraph{Check 3 --- step on the boundary.} When the bound and outer-ball constraints are inactive, the linear maximizer lives on the boundary of the $\Delta_k$-ball: $\tfrac12\|d_k^\star\|_2^2 = \Delta_k$. The working radius is fully spent each step. \checkmark
+
+\subsection{Why this is a real iterative TR, not a one-shot projection}
+
+When (and only when) the TR $C$-block is \emph{interleaved} with re-solves of Block A --- i.e., whenever $C$ moves, $(\boldsymbol\alpha,\boldsymbol\beta)$ is updated and so is $L$ --- the sequence $\{C^{(k)}\}$ is a genuine TR trajectory on the reduced function
+\[
+F(C) \;=\; \min_{\boldsymbol\alpha,\boldsymbol\beta}\;\Phi(\boldsymbol\alpha,\boldsymbol\beta,C) \;+\; \lambda \mathbf{R}_{\boldsymbol\beta}(\boldsymbol\beta).
+\]
+By the envelope theorem, $\nabla F(C) = L(\boldsymbol\alpha^\star(C),\boldsymbol\beta^\star(C))$ --- exactly the $L_k$ we used as the linear-model gradient. The actual reduction $F(C^{(k)}+d) - F(C^{(k)})$ is \emph{not} linear in $d$ (because $(\boldsymbol\alpha^\star,\boldsymbol\beta^\star)$ moves with $C$), so $r_k \neq 1$ in general and the radius-update rule does real work: it shrinks $\Delta_k$ whenever re-solving Block A shows the linear model over-predicted the reduction in $F$, and expands $\Delta_k$ when the model is consistently accurate. Algorithm 3 below puts this interleaving into pseudocode.
+
+\paragraph{Remark (Option TR-Q).} For a quadratic model $m_k(d) = L_k^\top d + \tfrac12 d^\top B_k d$ we need a Hessian surrogate $B_k$. The natural choice is an L-BFGS update on the sequence $\{(C^{(k)}, L_k)\}$, approximating $\nabla^2 F(C)$. This gives superlinear local convergence but requires storing gradient/iterate pairs. For $K = 2$ the linear model is almost always adequate; we leave TR-Q as future work.
+
+\paragraph{Remark (ARC).} Cubic regularization (Yuan 2015, \S 7, eq.\ 7.2) replaces the ball constraint by a $\tfrac13\sigma_k\|d\|_2^3$ penalty in the objective. It has better worst-case complexity than TR but needs a Hessian just like TR-Q. Noted here as an alternative; not used.
+
+%======================================================================
+\section{Algorithm 3 --- full pseudocode and numerical walkthrough}
+%======================================================================
+
+\subsection{Pseudocode (matches the style of Algorithm 2 in the paper)}
+
+\begin{algorithm}[H]
+\caption{Cost-Sensitive iSFS via BCD with Trust-Region $C$-update}
+\begin{algorithmic}[1]
+\Require data $\{\mathbf{X}_m, \mathbf{y}_m \text{ for } m \in \mathbf{pf}\}$, baseline $C^0$, problem radius $\Delta_{\max}$, initial TR radius $\Delta_0 \in (0,\Delta_{\max}]$, lower radius $\Delta_{\min}$, TR thresholds $\tau_1=0.25,\ \tau_2=0.75,\ \gamma_1=0.5,\ \gamma_2=2$, $\boldsymbol{\beta}$-regularization $\lambda$, $\boldsymbol{\alpha}$-regularization $\mathbf{R}_{\boldsymbol{\alpha}}$
+\Ensure $\boldsymbol{\alpha}$ (per-profile weights), $\boldsymbol{\beta}$ (shared coefficients), $C$ (class costs)
+\State Initialize $\boldsymbol{\beta}^{(0)}$ by fitting each source individually (paper's Algorithm 2 init).
+\State Initialize $C^{(0)} \gets C^0$, \;$\Delta \gets \Delta_0$.
+\For{outer iteration $t = 1, 2, \ldots$}
+    \State \textbf{Block A --- fix $C^{(t-1)}$, solve $(\boldsymbol{\alpha},\boldsymbol{\beta})$ by cost-sensitive Algorithm 2:}
+    \Repeat
+        \For{each profile $m$} \State $\boldsymbol{\alpha}_m \gets$ FISTA on eq (16$^C$) with $C_{y_{m,j}}$ weights. \EndFor
+        \State $\boldsymbol{\beta} \gets$ FISTA on $g^C(\boldsymbol{\beta}) + \lambda \mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})$, gradient $\nabla g^C(\boldsymbol{\beta}^i)$ per \S 6.2.
+    \Until{inner objective stops decreasing}
+    \State Record $F_{\text{old}} \gets \Phi(\boldsymbol{\alpha}^{(t)},\boldsymbol{\beta}^{(t)},C^{(t-1)}) + \lambda\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta}^{(t)})$.
+    \State \textbf{Block B --- TR step on $C$ around $C^{(t-1)}$:}
+    \State Compute per-class loss vector $L$:
+    \[ L_k = \frac{1}{|\mathbf{pf}|}\sum_{m}\frac{1}{2 n_m}\!\!\sum_{\substack{j:\,y_{m,j}=k}}(\hat y_{m,j} - y_{m,j})^2\quad\text{at } (\boldsymbol{\alpha}^{(t)},\boldsymbol{\beta}^{(t)}). \]
+    \State Propose TR step (unconstrained Cauchy direction for a linear model):
+    \[ d_{\mathrm{lin}} \gets \sqrt{2\Delta}\;L/\|L\|_2. \]
+    \State Clip $d_{\mathrm{lin}}$ so that $C^{(t-1)}+d \ge 0$ and $\tfrac12\|C^{(t-1)}+d-C^0\|_2^2 \le \Delta_{\max}$ (scalar clip for $K=2$; Coleman--Li scaling per \S 7.4 for general $K$). Call the clipped step $d^\star$.
+    \State Candidate: $\widehat C \gets C^{(t-1)} + d^\star$.
+    \State Evaluate actual reduction by briefly re-solving Block A at $\widehat C$:\;run a few FISTA sweeps of cost-sensitive Algorithm 2 with $C = \widehat C$ to get $(\widehat{\boldsymbol\alpha},\widehat{\boldsymbol\beta})$, and set $F_{\text{new}} \gets \Phi(\widehat{\boldsymbol\alpha},\widehat{\boldsymbol\beta},\widehat C) + \lambda\mathbf{R}_{\boldsymbol{\beta}}(\widehat{\boldsymbol\beta})$.
+    \State Predicted change (linear model on $\Phi_C$): $m(d^\star) - m(0) \gets L^\top d^\star$.
+    \State $r \gets (F_{\text{new}} - F_{\text{old}}) \,/\, (L^\top d^\star)$. \Comment{sign convention: we are \emph{increasing} $\Phi_C$ in the $C$-block}
+    \If{$r \ge \tau_1$} \State Accept: $C^{(t)} \gets \widehat C$. \Else \State Reject: $C^{(t)} \gets C^{(t-1)}$. \EndIf
+    \State Update TR radius: $\Delta \gets \min\big(\Delta_{\max},\,\max(\Delta_{\min},\,\mathrm{rule}(r,\Delta))\big)$, where
+    \[ \mathrm{rule}(r,\Delta) = \begin{cases}\gamma_2\Delta & r \ge \tau_2 \\ \Delta & \tau_1 \le r < \tau_2 \\ \gamma_1\Delta & r < \tau_1\end{cases} \]
+    \If{$\|C^{(t)} - C^{(t-1)}\|_\infty < \epsilon$ \textbf{and} $\|\boldsymbol{\beta}^{(t)} - \boldsymbol{\beta}^{(t-1)}\|_2 < \epsilon$ \textbf{and} $\Delta \le \Delta_{\min}$}
+        \State \Return $\boldsymbol{\alpha}^{(t)},\boldsymbol{\beta}^{(t)},C^{(t)}$.
+    \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+Two outer blocks, with the $C$-block implemented as a TR iteration. The TR radius $\Delta$ adapts automatically: if a step of size $\sqrt{2\Delta}$ in direction $L/\|L\|_2$ actually reduces the saddle objective as much as the linear model predicted, $\Delta$ grows; if re-solving Block A reveals the linear model over-predicted reduction, $\Delta$ shrinks; if the reduction is too small or negative, the step is rejected.
+
+\paragraph{Numerical walkthrough.} Deferred to a follow-up once a TR-L reference implementation exists. A worked trajectory for a synthetic 3-profile dataset will report, per outer iteration: $(\boldsymbol\alpha,\boldsymbol\beta)$ after Block A, per-class losses $L$, proposed step $d^\star$, reduction ratio $r_k$, accept/reject decision, and the updated radius $\Delta$.
+
+%======================================================================
+\section{Connection to BCD theory}
+%======================================================================
+
+\subsection{Multi-convex structure}
+
+Cost-sensitive iSFS sits inside the \textbf{multi-convex} family from \texttt{BCD\_explained.md} \S 3 / Aggarwal \S 4.10.2:
+
+\begin{center}
+\begin{tabular}{lllp{0.40\linewidth}}
+\toprule
+\textbf{block fixed} & \textbf{block updated} & \textbf{sub-problem} & \textbf{reason convex (or concave)} \\
+\midrule
+$\boldsymbol{\beta}, C$ & $\boldsymbol{\alpha}_m$ per profile & per-profile weighted least-squares & positive-semidefinite quadratic in $\boldsymbol{\alpha}_m$ \\
+$\boldsymbol{\alpha}, C$ & $\boldsymbol{\beta}$ & weighted regularized least-squares & positive-definite quadratic in $\boldsymbol{\beta}$ \\
+$\boldsymbol{\alpha}, \boldsymbol{\beta}$ & $C \in \mathcal B(C^0,\Delta_{\max})\cap\mathbb{R}^K_{\ge 0}$ & linear-in-$C$ over a convex compact set, solved by TR iteration & linear function on a ball (plus bounds) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The $(\boldsymbol\alpha,\boldsymbol\beta)$ blocks have closed-form-feeling solves (FISTA); the $C$-block is a genuine TR iteration whose \emph{inner step} is closed-form (the linear Cauchy step) but whose outer radius adaptation makes the overall $C$-update iterative. No learning rate inside any block.
+
+\subsection{What converges and what doesn't}
+
+Two facts coexist:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Inner BCD on $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ with $C$ fixed converges monotonically.} This is the standard multi-convex BCD theorem from Aggarwal \S 4.10.2: each step decreases the inner objective, so the inner loop is monotone.
+  \item \textbf{The outer trajectory is \emph{not} a strict monotonic decrease in $\Phi$} --- the C-block is a $\max$, so it can increase $\Phi$ between iterations even though the $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ block decreases it. The right invariant for the outer loop is the \textbf{saddle-point gap}:
+\end{enumerate}
+\[
+\text{gap}(\boldsymbol{\alpha}, \boldsymbol{\beta}, C) \;=\; \max_{C' \in \mathcal B(C^0,\Delta_{\max}),\,C'\ge 0}\Phi(\boldsymbol{\alpha},\boldsymbol{\beta},C') \;-\; \min_{\boldsymbol{\alpha}',\boldsymbol{\beta}'}\Phi(\boldsymbol{\alpha}',\boldsymbol{\beta}',C)
+\]
+
+Under standard conditions (strong convexity in $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ and the bounded-set constraint on $C$), saddle-point alternation reduces the gap to zero. Moreover, the TR radius update (Yuan 2015, \S 2) guarantees that the $C$-block behaves like a descent method on the reduced function $F(C) = \min_{\alpha,\beta} \Phi$: the radius shrinks whenever the linear model over-predicts, so the algorithm cannot oscillate indefinitely.
+
+\subsection{Connection to the textbook BCD case studies}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{K-means as BCD} (Aggarwal \S 4.10.3): two blocks, centroids and assignments, each with a closed-form optimum (mean and nearest-prototype). Cost-sensitive iSFS does the same with $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ and $C$, using weighted normal equations for the $(\boldsymbol\alpha,\boldsymbol\beta)$-block and a trust-region iteration for the $C$-block.
+  \item \textbf{ALS as BCD} (Aggarwal \S 8.3.2.3): two blocks $(U, V)$, each row solved as an independent ridge regression. Cost-sensitive iSFS's $\boldsymbol{\beta}$ update is structurally the same --- one global weighted ridge solve.
+  \item \textbf{\texttt{opt.impute}} (Bertsimas et al.\ JMLR 2018): two blocks, auxiliary state $U$ and imputations $(W, V)$, alternated. Cost-sensitive iSFS adds a third ``auxiliary state'' ($C$) and treats it the same way.
+\end{itemize}
+
+The trade-off Aggarwal flags (\S 4.10.2) applies directly:
+
+\begin{quote}
+``Each step in block coordinate descent is more expensive, but fewer steps are required.''
+\end{quote}
+
+For cost-sensitive iSFS at moderate $n$ and small $K$, each block is cheap: $(\boldsymbol\alpha,\boldsymbol\beta)$ via FISTA, $C$ via a closed-form Cauchy step plus scalar radius update.
+
+%======================================================================
+\section{Quick reference card}
+%======================================================================
+
+\begin{center}
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{symbol} & \textbf{meaning} & \textbf{where it lives} \\
+\midrule
+$\alpha^i_m \in \mathbb{R}$ & source-$i$ weight for profile $m$ & inner block, $\mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1$ \\
+$\boldsymbol{\beta}^i \in \mathbb{R}^{p_i}$ & shared feature coefficients for source $i$ & inner block, $\mathbf{R}_{\boldsymbol{\beta}}$ regularized \\
+$C \in \mathbb{R}^K_{\ge 0}$ & per-class cost vector & outer block, $C \in \mathcal B(C^0,\Delta_{\max})$ \\
+$C^0 \in \mathbb{R}^K_{\ge 0}$ & rescaled inverse-frequency baseline & user-chosen prior, TR center \\
+$\Delta_{\max}$ & problem-level TR radius around $C^0$ & hyperparameter (cross-validated) \\
+$\Delta_k$ & working TR radius at step $k$ of the $C$-block & updated by Yuan ratio rule \\
+$r_k$ & actual/predicted reduction ratio & governs $\Delta_k$ update \\
+$\lambda$ & strength of $\mathbf{R}_{\boldsymbol{\beta}}$ & hyperparameter (cross-validated) \\
+$L_k$ & per-class loss coefficient (gradient of $\Phi_C$ in class $k$) & recomputed every $C$ step \\
+$\hat{y}_{m,j}$ & per-sample model prediction $\sum_i \alpha^i_m \mathbf{x}^i_{m,j} \cdot \boldsymbol{\beta}^i$ & computed inside both blocks \\
+$C_{y_{m,j}}$ & class-cost lookup for sample $j$ in profile $m$ & scalar from the $K$-vector $C$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+
+\begin{center}
+\small
+\begin{tabular}{lp{0.50\linewidth}p{0.30\linewidth}}
+\toprule
+\textbf{update} & \textbf{formula} & \textbf{meaning} \\
+\midrule
+$\boldsymbol{\alpha}_m$ & $\arg\min$ of $\frac{1}{2}\sum_j C_{y_{m,j}}(\hat{y}-y)^2$ s.t.\ $\mathbf{R}_{\boldsymbol{\alpha}} \leq 1$ & weighted per-profile constrained LS \\
+$\boldsymbol{\beta}$ & $\arg\min$ of $g^C(\boldsymbol{\beta}) + \lambda \mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})$ via FISTA, gradient $\nabla g^C(\boldsymbol{\beta}^i)$ & weighted regularized LS \\
+$C$ & TR-L step: $d_{\mathrm{lin}} = \sqrt{2\Delta_k}\,L/\|L\|_2$, clipped to $C\ge 0$ and $\mathcal B(C^0,\Delta_{\max})$; accept if $r_k \ge \tau_1$ & trust-region iteration on $C$ (Yuan 2015 \S 2) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{theoretical fact} & \textbf{source} \\
+\midrule
+BCD with closed-form block updates monotonically decreases the inner objective on multi-convex problems & Aggarwal \S 4.10.2; \texttt{BCD\_explained.md} \S 3 \\
+DRO with an $\ell_2$ / $\chi^2$ ball around the class-distribution prior is principled cost-sensitive learning & Hu, Niu, Sato, Sugiyama (2018); Namkoong \& Duchi (2017) \\
+Trust-region methods solve bounded-step subproblems with adaptive radius via the actual/predicted ratio & Yuan (2015), \S 2, eq.\ 2.3--2.7 \\
+Coleman--Li affine-scaled TR handles bound constraints ($C \ge 0$) inside the TR subproblem & Yuan (2015), \S 3.3, eq.\ 3.34--3.37 \\
+The original iSFS Algorithm 2 (2-block BCD on $\boldsymbol{\alpha}, \boldsymbol{\beta}$) is the inner loop here & Xiang et al.\ (2013), \S 3.2 \\
+$K$-means and ALS are the canonical 2-block BCD examples this method generalizes & Aggarwal \S 4.10.3 and \S 8.3.2.3; \texttt{BCD\_explained.md} \S 4--5 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+
+\begin{center}
+\emph{Cost-sensitive iSFS with a trust-region $C$-block is a strict generalization of the original iSFS model: setting $\Delta_{\max} \to 0$ pins $C$ to the inverse-frequency baseline and recovers classical fixed-cost cost-sensitive learning, while finite $\Delta_{\max}$ lets the optimization adapt $C$ from the data via an iterative TR step (Yuan 2015, \S 2) that fits inside the same BCD machinery the rest of the model already uses.}
+\end{center}
+
+%======================================================================
+\appendix
+\section{Trust-region background (focused catalog)}
+%======================================================================
+
+Drawn from Yuan, Y.\ (2015), \emph{Recent advances in trust-region algorithms}, Math.\ Program.\ Ser.\ B 151, 249--281. We list the variants that bear on our $C$-block.
+
+\subsection{A.1\; The canonical trust-region subproblem (Yuan \S 2)}
+
+At iterate $x_k$ with gradient $g_k = \nabla f(x_k)$ and Hessian-surrogate $B_k$, the standard TR subproblem (eq.\ 2.3--2.4, p.\ 252) is
+\begin{equation}
+\min_{d \in \mathbb{R}^n}\; m_k(d) \;=\; f(x_k) + g_k^\top d + \tfrac12 d^\top B_k d\qquad\text{s.t.}\quad \|d\|_2 \le \Delta_k.
+\tag{TR}
+\end{equation}
+Each step defines
+\[
+\text{Pred}_k = m_k(0) - m_k(d_k),\qquad \text{Ared}_k = f(x_k) - f(x_k + d_k),\qquad r_k = \frac{\text{Ared}_k}{\text{Pred}_k}
+\]
+(eq.\ 2.7, p.\ 253). The step is accepted if $r_k \ge \tau_0$ (commonly $\tau_0 = \tau_1$), and the radius is updated by
+\[
+\Delta_{k+1} = \begin{cases}\gamma_2 \Delta_k & r_k \ge \tau_2 \\ \Delta_k & \tau_1 \le r_k < \tau_2 \\ \gamma_1 \Delta_k & r_k < \tau_1\end{cases}
+\]
+with typical $(\tau_1,\tau_2,\gamma_1,\gamma_2) = (0.25,\,0.75,\,0.5,\,2)$. The \textbf{Cauchy decrease} (sufficient-descent) condition (eq.\ 2.5, p.\ 252) is
+\[
+\text{Pred}_k \;\ge\; c\,\|g_k\|_2\,\min\!\Big\{\Delta_k,\,\|g_k\|_2/\|B_k\|_2\Big\},\qquad c > 0.
+\]
+
+\textbf{How we use this.} See the mapping table in \S 5.8 and the convention note in \S 5.9 (the main body). The $C$-block uses $B_k = 0$ (linear model) with our squared-distance convention $\tfrac12\|d\|_2^2 \le \Delta_k$.
+
+\subsection{A.2\; Affine-scaled TR for bound constraints (Yuan \S 3.3, eq.\ 3.34--3.37)}
+
+For a bound-constrained problem $\min f(x)$ s.t.\ $\ell \le x \le u$, Coleman \& Li (1996) replace the Euclidean ball with an ellipsoid whose axes shrink in directions where the current iterate is near a bound. Define
+\[
+v^{(i)}(x) \;=\; \begin{cases} x_i - \ell_i & \text{if } (\nabla f(x))_i \ge 0 \text{ and } \ell_i > -\infty \\ u_i - x_i & \text{if } (\nabla f(x))_i < 0 \text{ and } u_i < +\infty \\ +\infty & \text{otherwise} \end{cases}
+\]
+and set the scaling $D_k = \mathrm{diag}\big(\sqrt{|v^{(i)}(x_k)|}\big)$. The TR subproblem becomes
+\[
+\min\; m_k(d)\qquad\text{s.t.}\quad \tfrac12\|D_k^{-1} d\|_2^2 \le \Delta_k.
+\]
+In directions where $v^{(i)} \to 0$ (a bound is active), the effective step shrinks to zero, so no iterate can cross a bound. \textbf{How we use this.} For $C \ge 0$ with the gradient $L \ge 0$ (so the ascent direction never points \emph{toward} zero except on components where $L_i = 0$), scaling is usually inactive and the Euclidean step works. The Coleman--Li scaling is the principled fallback when any $C_i^{(k)}$ does approach $0$.
+
+\subsection{A.3\; Other variants --- noted but not used here}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Retrospective TR radius rule} (Bastin et al., eq.\ 2.13--2.14, p.\ 255). Updates $\Delta_{k+1}$ using the \emph{next} model $m_{k+1}$ rather than $m_k$. Useful when model quality changes rapidly between iterates. \emph{Not used}: our linear model is constant within a $C$-block, so retrospective and prospective updates coincide.
+  \item \textbf{Adaptive-radius TR} $\Delta_k = \mu_k\|g_k\|_2$ (Fan \& Yuan, eq.\ 2.12, p.\ 254). Scales the radius with current gradient magnitude. \emph{Noted}; we instead start $\Delta_0$ as a hyperparameter.
+  \item \textbf{Non-monotone TR} (Toint; Yuan \S 2). Compares reduction to the max of the last $M$ iterates rather than the immediate predecessor. \emph{Relevant for saddle problems}: the outer BCD objective need not decrease monotonically. Noted as a possible future robustness improvement.
+  \item \textbf{Subspace TR} (Yuan eq.\ 2.16--2.21, p.\ 256). Restricts $d$ to a low-dimensional subspace (span of recent gradients/steps). \emph{Not used}: $K = 2$ is already 2-dimensional.
+  \item \textbf{Conic-model TR} (Di \& Sun; Yuan eq.\ 2.6, p.\ 252). Replaces the quadratic model with a rational/conic one to preserve nonconvex structure. \emph{Not used}: the $C$-block is already linear.
+  \item \textbf{Cubic regularization (ARC)} (Cartis--Gould--Toint; Yuan eq.\ 7.2, p.\ 272). Replaces the ball constraint with a $\tfrac13 \sigma_k\|d\|^3$ penalty. Better worst-case iteration complexity than TR. \emph{Noted as an alternative to the quadratic-model variant TR-Q in \S 7 above}; requires a Hessian surrogate we do not currently maintain.
+\end{itemize}
+
+\subsection{A.4\; Subproblem solvers (not needed for $K = 2$, cited for completeness)}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Steihaug truncated-CG} (Steihaug 1983; Yuan p.\ 252). Runs CG on $(B_k,-g_k)$ and terminates at the first of three conditions: CG convergence, direction of negative curvature detected, or iterate hits the ball boundary. Achieves at least a Cauchy-fraction of the optimal reduction.
+  \item \textbf{Mor\'e--Sorensen} (Mor\'e \& Sorensen 1983). Solves the secular equation $\|(B_k + \lambda I)^{-1}g_k\|_2 = \Delta_k$ for the Lagrange multiplier $\lambda^\star$, giving the globally optimal TR step. Globally convergent but more expensive.
+  \item \textbf{Dogleg} (Powell 1970). Two-piece path combining steepest descent and Newton directions; exact for convex quadratics with $B_k \succ 0$.
+\end{itemize}
+
+For our TR-L subproblem on $K = 2$ the solver is a single scalar: $d^\star = \sqrt{2\Delta_k}\,L/\|L\|_2$ followed by a one-line clip to $C \ge 0$.
+
+\end{document}

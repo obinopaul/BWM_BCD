@@ -1,0 +1,886 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[margin=1in]{geometry}
+\PassOptionsToPackage{hyphens}{url}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\usepackage{textcomp}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  showstringspaces=false,
+  breaklines=true,
+  numbers=none,
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{black!50},
+  backgroundcolor=\color{black!3},
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true
+}
+
+\lstdefinestyle{python}{
+  language=Python,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  stringstyle=\color{green!50!black},
+  commentstyle=\color{gray}\itshape
+}
+
+\newtheorem*{definition*}{Definition}
+\newtheorem*{remark*}{Remark}
+
+\title{Cost-Sensitive iSFS via Block Coordinate Descent}
+\author{Working Notes}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+\noindent A cost-sensitive extension of the \textbf{incomplete Source-Feature Selection (iSFS)} model of Xiang, Yuan, Fan, Wang, Thompson \& Ye (KDD 2013). We introduce a learnable per-class cost vector $C$ and derive the BCD updates for jointly optimizing $(\alpha, \beta, C)$ using only the paper's notation.
+\end{abstract}
+
+\bigskip
+\noindent\textbf{Sources used throughout:}
+\begin{itemize}[leftmargin=*,itemsep=4pt]
+  \item \textbf{Xiang et al. (2013).} \emph{Multi-Source Learning with Block-wise Missing Data for Alzheimer's Disease Prediction.} KDD '13 (\path{Multi_source_BWM.pdf}). The iSFS objective is eq (14); its data-fitting term is eq (15); the alternating block updates for $\alpha$ and $\beta$ are eq (16) and eqs (17)--(18). Algorithm 2 in \S 3.2 lays out the original BCD scheme.
+  \item \textbf{Aggarwal,} \emph{Linear Algebra and Optimization for Machine Learning,} \S 4.10 (\path{1660642748-214-217.pdf}) and \S 8.3 (\path{1660642748-356-362.pdf}). The block coordinate descent framework, the multi-convex monotonicity theorem, and the K-means / ALS examples we inherit.
+  \item \textbf{Bertsimas, Pawlowski, Zhuo (JMLR 2018),} \emph{From Predictive Methods to Missing Data Imputation} (\path{17-073.pdf}). Uses BCD vs CD as the inner solver for non-convex imputation.
+  \item \textbf{\path{BCD_explained.md}} (this folder). Working derivation of the BCD framework with the K-means and ALS case studies.
+  \item \textbf{Namkoong \& Duchi (2017),} \emph{Variance-based regularization with convex objectives,} NeurIPS --- distributionally robust optimization with the chi-squared ball, the closed-form max via KKT.
+  \item \textbf{Hu, Niu, Sato, Sugiyama (2018),} \emph{Does distributionally robust supervised learning give robust classifiers?,} ICML --- connects DRO directly to cost-sensitive learning.
+\end{itemize}
+
+\newpage
+\tableofcontents
+\newpage
+
+%======================================================================
+\section{Recap of the iSFS notation we inherit from the paper}
+%======================================================================
+
+We use the \textbf{exact symbols} from Xiang et al.\ (2013) \S 3.1. No new variables until \S 3.
+
+\paragraph{Variables.}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $S$ --- number of data sources (e.g., PET, MRI, CSF; so $S = 3$).
+  \item $m$ --- a profile index. A profile is the binary indicator of which sources are present, encoded as a decimal integer.
+  \item $\mathbf{pf}$ --- vector of profiles for all participants. $|\mathbf{pf}|$ is the number of distinct profiles.
+  \item $n_m$ --- number of samples in profile $m$.
+  \item $n$ --- number of rows of $\mathbf{X}$ in a generic context (the paper uses both $n$ and $n_m$).
+  \item $\mathbf{X}^i \in \mathbb{R}^{n \times p_i}$ --- data matrix for source $i$.
+  \item $\mathbf{X}^i_m$ --- data matrix $\mathbf{X}^i$ restricted to samples in profile $m$.
+  \item $\boldsymbol{\beta}^i \in \mathbb{R}^{p_i}$ --- feature coefficient block for source $i$. \textbf{Shared across profiles.}
+  \item $\boldsymbol{\beta} = (\boldsymbol{\beta}^1, \ldots, \boldsymbol{\beta}^S) \in \mathbb{R}^{p_1 + \ldots + p_S}$ --- full feature coefficient vector.
+  \item $\alpha^i_m$ --- scalar weight on source $i$ for profile $m$. \textbf{Profile-specific.}
+  \item $\boldsymbol{\alpha}_m = (\alpha^1_m, \ldots, \alpha^S_m) \in \mathbb{R}^S$ --- full source-weight vector for profile $m$.
+  \item $\mathbf{y}_m$ --- label vector for samples in profile $m$.
+  \item $\mathbf{L}(\cdot, \cdot)$ --- convex loss function (least-squares, logistic, etc.). The paper says: \emph{``L can be any convex loss function such as the least squares loss function or the logistic loss function and $n$ is number of rows of $\mathbf{X}$.''}
+  \item $\mathbf{R}_{\boldsymbol{\alpha}}, \mathbf{R}_{\boldsymbol{\beta}}$ --- regularizers on $\boldsymbol{\alpha}$ and $\boldsymbol{\beta}$.
+  \item $\lambda$ --- regularization strength on $\mathbf{R}_{\boldsymbol{\beta}}$.
+\end{itemize}
+
+\paragraph{Equation (14)} --- the iSFS objective:
+\begin{equation}
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}}\;\;\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f(\mathbf{X}_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf{y}_m) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\end{equation}
+\[
+\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1\;\;\forall\,m \in \mathbf{pf}
+\]
+
+\paragraph{Equation (15)} --- the per-profile data-fitting term:
+\begin{equation}
+f(\mathbf{X},\boldsymbol{\beta},\boldsymbol{\alpha},\mathbf{y}) \;=\; \frac{1}{n}\,\mathbf{L}\!\left(\sum_{i=1}^{S}\alpha^{i}\mathbf{X}^{i}\boldsymbol{\beta}^{i},\;\mathbf{y}\right)
+\end{equation}
+
+\paragraph{Equation (16)} --- the $\boldsymbol{\alpha}$ subproblem (when $\boldsymbol{\beta}$ is fixed). Decouples by profile:
+\begin{equation}
+\min_{\boldsymbol{\alpha}}\;\;\Big\|\sum_{i=1}^{S}\alpha^{i}\mathbf{X}^{i}\boldsymbol{\beta}^{i} - \mathbf{y}\Big\|_{2}^{2}
+\quad\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}) \leq 1
+\end{equation}
+
+\paragraph{Equation (17)} --- the $\boldsymbol{\beta}$ subproblem (when $\boldsymbol{\alpha}$ is fixed):
+\begin{equation}
+\min_{\boldsymbol{\beta}}\;\;g(\boldsymbol{\beta}) + \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta}),
+\qquad
+g(\boldsymbol{\beta}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\Big\|\sum_{i=1}^{S}\alpha^{i}_{m}\mathbf{X}^{i}_{m}\boldsymbol{\beta}^{i} - \mathbf{y}_m\Big\|_{2}^{2}
+\end{equation}
+
+\paragraph{Equation (18)} --- the gradient of $g$ for the $\boldsymbol{\beta}$ step (used by FISTA):
+\begin{equation}
+\nabla g(\boldsymbol{\beta}^{i}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{I}\!\left(m\,\&\,2^{S-i}\neq 0\right)\,(\alpha^{i}_{m}\mathbf{X}^{i}_{m})^{T}\!\Big(\sum_{j=1}^{S}\alpha^{j}_{m}\mathbf{X}^{j}_{m}\boldsymbol{\beta}^{j} - \mathbf{y}_m\Big)
+\end{equation}
+
+The bitwise indicator $\mathbf{I}(m \,\&\, 2^{S-i} \neq 0)$ equals $1$ iff source $i$ is present in profile $m$. This is a literal bit-test on the profile integer.
+
+\textbf{Algorithm 2 in the paper} is the BCD that alternates eq (16) and eq (17) until the objective stops decreasing. It is exactly the multi-convex BCD pattern from Aggarwal \S 4.10.2 --- convex in each block given the other fixed, monotonic decrease across the alternation.
+
+That is the entire toolkit we inherit. Everything below adds \textbf{one new variable $C$} and derives the corresponding new block update.
+
+%======================================================================
+\section{Why a cost-sensitive extension --- and why fixed $C$ is not enough}
+%======================================================================
+
+\subsection{Motivation}
+
+In Alzheimer's disease prediction (and most clinical settings), the minority class (e.g., progressive MCI converters) is rare. Standard iSFS minimizes average loss and quietly becomes majority-biased. The classical fix is \textbf{cost-sensitive learning}: assign higher misclassification penalty to minority-class errors. From Elkan (2001):
+\[
+\text{Total Cost} \;=\; C(0,1)\cdot\text{FN} \;+\; C(1,0)\cdot\text{FP},\qquad C(0,1) \gg C(1,0).
+\]
+
+For our setting, define a \textbf{per-class cost vector} $C = (C_1, \ldots, C_K)$ where $K$ is the number of classes ($K = 2$ for binary). Each sample's loss contribution is multiplied by $C_{y_j}$ --- the cost weight that corresponds to its class label.
+
+\subsection{Option A --- fixed $C$ (classical Elkan-style)}
+
+\paragraph{The fixed-$C$ rule.} The standard ``inverse class frequency'' choice:
+\[
+C_k^{\,0} \;=\; \frac{N}{K \cdot n_k},\qquad k = 1, \ldots, K
+\]
+where:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $N = \sum_k n_k$ is the total sample count.
+  \item $n_k$ is the number of samples in class $k$.
+\end{itemize}
+
+This makes minority-class samples count more in the loss. For our running example with $n_- = 12$, $n_+ = 4$, $N = 16$, $K = 2$:
+\[
+C_-^{\,0} = \frac{16}{2\cdot 12} \approx 0.667,\qquad C_+^{\,0} = \frac{16}{2\cdot 4} = 2.0.
+\]
+The minority class gets $n_-/n_+ = 3\times$ the per-sample weight of the majority class.
+
+\paragraph{The cost-sensitive version of $\mathbf{L}$.} Promote the paper's loss function $\mathbf{L}$ to its class-weighted form:
+\[
+\mathbf{L}^{C}(\hat{\mathbf{y}},\mathbf{y}) \;=\; \frac{1}{2}\sum_{j=1}^{n} C_{y_{j}}\,(\hat{y}_{j} - y_{j})^{2}
+\]
+
+Plug this into the iSFS objective in place of $\mathbf{L}$. With $C$ fixed at $C^0$, the entire optimization remains in $(\boldsymbol{\alpha}, \boldsymbol{\beta})$:
+\[
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}}\;\;\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f^{C^{0}}(\mathbf{X}_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf{y}_m) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\]
+where
+\[
+f^{C}(\mathbf{X},\boldsymbol{\beta},\boldsymbol{\alpha},\mathbf{y}) \;=\; \frac{1}{n}\,\mathbf{L}^{C}\!\left(\sum_{i=1}^{S}\alpha^{i}\mathbf{X}^{i}\boldsymbol{\beta}^{i},\;\mathbf{y}\right).
+\]
+
+\textbf{Algorithm 2 from the paper runs unchanged} --- only the inside of $\mathbf{L}$ carries the $C^0$ weights.
+
+\subsection{Why BCD on $C$ is impossible in Option A}
+
+Define the per-class loss contribution at the current $(\boldsymbol{\alpha}, \boldsymbol{\beta})$:
+\[
+L_k(\boldsymbol{\alpha},\boldsymbol{\beta}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\!\!\sum_{\substack{j: y_{m,j} = k}}\!(\hat{y}_{m,j} - y_{m,j})^{2}
+\]
+
+The data-fitting part of the objective as a function of $C$ alone is
+\[
+\Phi_C(C) \;=\; \sum_{k=1}^{K} C_k\,L_k(\boldsymbol{\alpha},\boldsymbol{\beta}).
+\]
+
+This is \textbf{linear in $C$} with positive coefficients. Now check what happens if you try to ``solve for $C$'' with no constraint:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{try} & \textbf{result} \\
+\midrule
+$\min_C \Phi_C(C),\;\; C \in \mathbb{R}^K$ & $-\infty$ (unbounded below) \\
+$\min_C \Phi_C(C),\;\; C_k \geq 0$ & $C^* = 0$ --- trivial, model doesn't learn anything \\
+$\max_C \Phi_C(C),\;\; C_k \geq 0$ & $+\infty$ (unbounded above) \\
+$\max_C \Phi_C(C),$ single fixed value & not an optimization, just a constant \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+In every case, the ``fix $\boldsymbol{\alpha}, \boldsymbol{\beta}$, solve for $C$'' step is \textbf{degenerate}. There is no well-defined sub-problem in $C$ alone unless $C$ is constrained to a non-trivial bounded set.
+
+This is exactly why classical cost-sensitive learning \textbf{never solves for $C$}:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Elkan (2001),} \emph{The Foundations of Cost-Sensitive Learning,} IJCAI --- $C$ is set from domain knowledge, never optimized.
+  \item \textbf{Domingos (1999),} \emph{MetaCost: A general method for making classifiers cost-sensitive,} KDD --- $C$ is fixed by the user.
+  \item \textbf{King \& Zeng (2001),} \emph{Logistic regression in rare events data,} Political Analysis --- uses inverse-frequency weights; $C$ is computed from class counts and never updated.
+  \item \texttt{class\_weight=`balanced'} in scikit-learn --- implements $C_k = N/(K \cdot n_k)$ exactly, then it is fixed.
+\end{itemize}
+
+\textbf{Conclusion for Option A:} Two-block BCD only --- $(\boldsymbol{\alpha}, \boldsymbol{\beta})$. No third block. There is no ``fix $\boldsymbol{\alpha}, \boldsymbol{\beta}$, solve for $C$'' step in this framework.
+
+To get a real $C$ step, $C$ must live in a bounded set. That is what \S 3 below builds.
+
+%======================================================================
+\section{The cost-sensitive iSFS objective}
+%======================================================================
+
+\textbf{One new variable} beyond what the paper uses:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $C \in \mathbb{R}^K$ --- per-class cost vector. $K$ parameters total (just 2 for binary classification).
+  \item $C^0 \in \mathbb{R}^K$ --- baseline cost vector. We use the rescaled inverse-frequency baseline (defined in \S 4).
+  \item $\rho > 0$ --- trust-region radius around $C^0$ (hyperparameter).
+  \item $\mathcal{C}_\rho$ --- feasible set for $C$ (defined in \S 4).
+\end{itemize}
+
+\paragraph{Cost-sensitive loss function} --- extends the paper's $\mathbf{L}$ by attaching the class-cost weight to each sample's residual:
+\begin{equation}
+\boxed{\;\mathbf{L}^{C}(\hat{\mathbf{y}},\mathbf{y}) \;=\; \frac{1}{2}\sum_{j=1}^{n} C_{y_{j}}\,(\hat{y}_{j} - y_{j})^{2}\;}
+\end{equation}
+
+Read this in three pieces:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $(\hat{y}_j - y_j)^2$ --- squared residual for sample $j$ (same as paper's least-squares).
+  \item $C_{y_j}$ --- look up the cost weight for sample $j$'s class label $y_j$. This is K-way indexing, \textbf{not} a per-sample free parameter. $C$ still has only $K$ total parameters.
+  \item $\sum_j$ --- sum over all samples.
+\end{itemize}
+
+When $C_k = 1$ for all $k$, $\mathbf{L}^C$ reduces to $\frac{1}{2}\|\hat{\mathbf{y}} - \mathbf{y}\|^2$, which is exactly the paper's least-squares $\mathbf{L}$.
+
+\paragraph{Cost-sensitive data-fitting term} --- extends eq (15) by replacing $\mathbf{L}$ with $\mathbf{L}^C$:
+\begin{equation}
+\boxed{\;f^{C}(\mathbf{X},\boldsymbol{\beta},\boldsymbol{\alpha},\mathbf{y}) \;=\; \frac{1}{n}\,\mathbf{L}^{C}\!\left(\sum_{i=1}^{S}\alpha^{i}\mathbf{X}^{i}\boldsymbol{\beta}^{i},\;\mathbf{y}\right)\;}
+\end{equation}
+
+\paragraph{Cost-sensitive iSFS objective} --- saddle-point extension of eq (14):
+\begin{equation}
+\boxed{\;
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}}\;\max_{C \in \mathcal{C}_\rho}\;\;\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f^{C}(\mathbf{X}_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf{y}_m) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\;}
+\end{equation}
+\[
+\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1\;\;\forall\,m \in \mathbf{pf}
+\]
+
+\paragraph{Three things to read off:}
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{$\min$ over $(\boldsymbol{\alpha}, \boldsymbol{\beta})$, $\max$ over $C$.} This is the saddle-point structure used in distributionally robust optimization (DRO). The model is trained against the worst-case re-weighting of the classes.
+  \item \textbf{$C$ lives in $\mathcal{C}_\rho$.} No regularizer term $\mu \mathbf{R}_C(C)$ in the objective. $C$ is constrained, not penalized.
+  \item \textbf{The only changes from eq (14):} new variable $C$; $f \to f^C$; new constraint $C \in \mathcal{C}_\rho$. Everything else is identical.
+\end{enumerate}
+
+\textbf{Why a max over $C$, not a min.} A pure-min framing in $C$ gives the wrong sign --- classes with higher loss would get \emph{lower} cost weight, the opposite of cost-sensitive intent. The max framing is the principled way to learn $C$ jointly: the $\max$ is ``the adversary picks the worst-case re-weighting for the current model'', and minimizing against that adversary forces the model to do well across \textbf{all} re-weightings inside the ball, including the cost-sensitive ones.
+
+%======================================================================
+\section{The constraint set $\mathcal{C}_\rho$}
+%======================================================================
+
+$\mathcal{C}_\rho$ is built from \textbf{two stacked constraints}. Each one alone is broken; the combination is what works.
+
+\subsection{The two pieces}
+
+\paragraph{Piece 1 --- simplex (budget):}
+\[
+C_k \geq 0,\qquad \sum_{k=1}^{K} C_k = K
+\]
+Pins the total cost weight to $K$, so the average per class is exactly $1$. Without this, $C$ could be sent to $0$ or $+\infty$.
+
+\paragraph{Piece 2 --- ball (trust region around $C^0$):}
+\[
+\tfrac{1}{2}\,\|C - C^{0}\|_{2}^{2}\;\leq\;\rho
+\]
+Bounds how far $C$ is allowed to move away from the baseline. Without this, even on the simplex, the max of a linear function would land at a degenerate corner.
+
+\paragraph{Combined:}
+\begin{equation}
+\boxed{\;\mathcal{C}_\rho \;=\; \Big\{\,C \in \mathbb{R}^{K} \;:\; \underbrace{C_k \geq 0,\;\;\textstyle\sum_{k=1}^{K} C_k = K}_{\text{simplex}},\;\;\underbrace{\tfrac{1}{2}\|C - C^{0}\|_{2}^{2} \leq \rho}_{\text{ball}}\,\Big\}\;}
+\end{equation}
+
+\paragraph{Why both pieces are needed:}
+
+\begin{center}
+\begin{tabular}{p{0.20\linewidth}p{0.70\linewidth}}
+\toprule
+\textbf{only this} & \textbf{what goes wrong} \\
+\midrule
+simplex alone & $\max_C \sum_k C_k L_k$ puts \textbf{all} mass on the class with the highest $L_k$ (a corner of the simplex). Degenerate. \\
+ball alone & no upper bound on $C_k$. Max is unbounded. \\
+\textbf{both} & max is \textbf{bounded, interior, continuous in $(\boldsymbol{\alpha}, \boldsymbol{\beta})$}, with a closed-form solution via Cauchy--Schwarz. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The baseline $C^0$ (rescaled inverse frequency)}
+
+To make $C^0$ live inside $\mathcal{C}_\rho$, rescale the inverse-frequency rule so it sums to $K$:
+\[
+C_k^{\,0} \;=\; \frac{K \cdot (1/n_k)}{\displaystyle\sum_{j=1}^{K}(1/n_j)}
+\]
+
+For binary $n_- = 12$, $n_+ = 4$, $K = 2$:
+\[
+C_-^{\,0} = \frac{2\cdot(1/12)}{(1/12)+(1/4)} = 0.5,\qquad C_+^{\,0} = \frac{2\cdot(1/4)}{(1/12)+(1/4)} = 1.5
+\]
+
+Same $n_-/n_+ = 3\times$ ratio for the minority, just rescaled to sum to $K = 2$. By construction, $C^0 \in \mathcal{C}_\rho$ for any $\rho \geq 0$ (it sits at the centroid of the ball).
+
+\subsection{What $\rho$ means in plain terms}
+
+$\rho$ is the \textbf{squared-distance budget} that $C$ is allowed to spend moving away from $C^0$. It is a \textbf{trust-region radius}, not a regularizer.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{$\rho$ value} & \textbf{behavior of $C$} \\
+\midrule
+$\rho \to 0$ & $C$ is frozen at $C^0$ --- recovers Option A (classical fixed cost-sensitive) \\
+$\rho$ small & $C$ wiggles a little around $C^0$ --- ``almost-classical'' \\
+$\rho$ large & $C$ can roam most of the simplex --- aggressive adaptation \\
+$\rho \to \infty$ & constraint becomes vacuous --- max collapses to a corner of the simplex (degenerate) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$\rho$ smoothly interpolates between \emph{fixed $C^0$} and \emph{unconstrained}. Tune by cross-validation.
+
+\subsection{$K = 2$ visualization (binary case)}
+
+With $K = 2$, the simplex $C_- + C_+ = 2$ is a line segment. Substitute $C_+ = 2 - C_-$ into the ball constraint:
+\[
+\tfrac{1}{2}\!\left[(C_- - C_-^{0})^{2} + (C_+ - C_+^{0})^{2}\right] \;=\; (C_- - C_-^{0})^{2} \;\leq\; \rho
+\]
+
+(The two squared deviations are equal because $C_- - C_-^0 = -(C_+ - C_+^0)$ from the simplex constraint.) So $\mathcal{C}_\rho$ collapses to a one-dimensional interval:
+\[
+C_- \in \big[\,C_-^{0} - \sqrt{\rho},\;\;C_-^{0} + \sqrt{\rho}\,\big],\qquad C_+ = 2 - C_-.
+\]
+
+For $C^0 = (0.5, 1.5)$:
+
+\begin{center}
+\begin{tabular}{cccp{0.40\linewidth}}
+\toprule
+$\rho$ & $C_-$ lives in & $C_+$ lives in & meaning \\
+\midrule
+$0.04$ & $[0.30, 0.70]$ & $[1.30, 1.70]$ & tight wiggle: $C$ stays within $\pm 0.2$ of baseline \\
+$0.25$ & $[0.00, 1.00]$ & $[1.00, 2.00]$ & loose: $C_-$ can drop to 0 \\
+$1.00$ & $[0.00, 1.50]$ & $[0.50, 2.00]$ & very loose: ball edge hits the simplex corners \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+You pick $\rho$ to control how much room $C$ gets around the inverse-frequency anchor.
+
+\subsection{Where this comes from --- research}
+
+The chi-squared / L2 ball constraint on a per-class re-weighting vector is the \textbf{distributionally robust optimization (DRO)} framework:
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Namkoong \& Duchi (2017),} \emph{Variance-based regularization with convex objectives,} NeurIPS --- defines DRO with a chi-squared divergence ball, proves the closed-form max via KKT, and shows it is equivalent to empirical risk minimization plus a variance penalty. \textbf{The ball lives in the constraint set, not in the objective.}
+  \item \textbf{Duchi \& Namkoong (2021),} \emph{Learning models with uniform performance via DRO,} Annals of Statistics --- extends to general divergence balls (chi-squared, KL, Wasserstein) and proves uniform convergence under DRO.
+  \item \textbf{Hu, Niu, Sato, Sugiyama (2018),} \emph{Does distributionally robust supervised learning give robust classifiers?,} ICML --- connects DRO \textbf{directly} to cost-sensitive learning. They show that DRO over a chi-squared ball around the empirical class distribution is a principled way to \textbf{learn} cost weights instead of fixing them by hand.
+\end{itemize}
+
+\textbf{The intuition from these papers, in one sentence:}
+
+\begin{quote}
+Train $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ to minimize loss under the \textbf{worst-case re-weighting} $C$ of the classes that lies within a ball of radius $\sqrt{2\rho}$ around the baseline $C^0$.
+\end{quote}
+
+That is exactly what the saddle-point $\min_{\boldsymbol{\alpha},\boldsymbol{\beta}} \max_{C \in \mathcal{C}_\rho}$ says.
+
+%======================================================================
+\section{Step 1 --- fix $C$, solve $(\boldsymbol{\alpha}, \boldsymbol{\beta})$}
+%======================================================================
+
+\begin{definition*}[FISTA]
+\textbf{FISTA} = \emph{Fast Iterative Shrinkage-Thresholding Algorithm} (Beck \& Teboulle, 2009, \emph{SIAM Journal on Imaging Sciences}). It is the standard \textbf{accelerated proximal gradient method} for solving optimization problems of the form
+\[
+\min_{x}\;\;f(x) + g(x)
+\]
+where $f$ is convex and smooth (with Lipschitz-continuous gradient $\nabla f$) and $g$ is convex (possibly non-smooth) but has an efficient \textbf{proximal operator}
+\[
+\mathrm{prox}_{tg}(v) \;=\; \arg\min_{x}\Big\{\,\tfrac{1}{2}\|x - v\|^2 + t\cdot g(x)\,\Big\}.
+\]
+Each FISTA step takes a gradient step on $f$, applies the proximal operator of $g$, and uses Nesterov-style momentum to accelerate. It converges at rate $O(1/k^2)$ --- strictly better than vanilla gradient descent's $O(1/k)$. The original iSFS Algorithm 2 in Xiang et al.\ (2013) cites Beck \& Teboulle and uses FISTA for both eq (16) (with $f$ = least-squares, $g$ = unit-ball indicator) and eq (17) (with $f$ = $g(\boldsymbol{\beta})$, $g$ = $\lambda \mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})$). We use the same algorithm here, modified only by the per-sample cost weight $C_{y_{m,j}}$ that appears inside $f$.
+\end{definition*}
+
+Hold $C$ fixed inside $f^C$. The cost-sensitive iSFS problem reduces to a $C$-weighted version of the paper's eq (14):
+\[
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}}\;\;\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f^{C}(\mathbf{X}_m,\boldsymbol{\beta},\boldsymbol{\alpha}_m,\mathbf{y}_m) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\]
+
+For least-squares loss the inner expansion is:
+\[
+\mathbf{L}^{C}\!\left(\sum_{i}\alpha^{i}_{m}\mathbf{X}^{i}_{m}\boldsymbol{\beta}^{i},\;\mathbf{y}_m\right) \;=\; \frac{1}{2}\sum_{j=1}^{n_m} C_{y_{m,j}}\!\left(\hat{y}_{m,j} - y_{m,j}\right)^{2}
+\]
+
+\paragraph{One auxiliary definition:}
+\[
+\hat{y}_{m,j}(\boldsymbol{\alpha}_m,\boldsymbol{\beta}) \;=\; \sum_{i=1}^{S}\alpha^{i}_{m}\,\mathbf{x}^{i}_{m,j}\!\cdot\boldsymbol{\beta}^{i}
+\]
+
+Variables:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $j \in \{1, \ldots, n_m\}$ --- sample index inside profile $m$.
+  \item $y_{m,j}$ --- the class label of sample $j$ in profile $m$.
+  \item $\mathbf{x}^i_{m,j}$ --- the $j$-th row of $\mathbf{X}^i_m$, i.e., the source-$i$ feature vector of sample $j$ in profile $m$.
+  \item $\hat{y}_{m,j}$ --- the model prediction for sample $j$ in profile $m$.
+\end{itemize}
+
+$\hat{y}_{m,j}$ is just the per-sample form of $\sum_i \alpha^i_m \mathbf{X}^i_m \boldsymbol{\beta}^i$ from eq (15). It is linear in $\boldsymbol{\alpha}_m$ (with $\boldsymbol{\beta}$ fixed) and linear in $\boldsymbol{\beta}$ (with $\boldsymbol{\alpha}_m$ fixed).
+
+The inner block is itself a 2-block alternation, exactly Algorithm 2 of the paper, with one change: every squared residual carries $C_{y_{m,j}}$.
+
+\subsection{Inner step 1a --- $\boldsymbol{\alpha}$ update (per profile)}
+
+For each profile $m$, the cost-sensitive version of paper eq (16):
+\begin{equation}
+\boxed{\;\min_{\boldsymbol{\alpha}_m}\;\;\frac{1}{2}\sum_{j=1}^{n_m} C_{y_{m,j}}\!\left(\sum_{i=1}^{S}\alpha^{i}_{m}\,\mathbf{x}^{i}_{m,j}\!\cdot\boldsymbol{\beta}^{i} \;-\; y_{m,j}\right)^{\!2}\quad\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1\;}
+\end{equation}
+
+\textbf{Sanity check.} When $C_k = 1$ for all $k$, every $C_{y_{m,j}}$ becomes $1$, the inner sum collapses to $\frac{1}{2}\|\sum_i \alpha^i_m \mathbf{X}^i_m \boldsymbol{\beta}^i - \mathbf{y}_m\|^2$, and we recover paper eq (16) verbatim. \checkmark
+
+\paragraph{Gradient (used by FISTA / proximal gradient).} Take the partial with respect to $\alpha^i_m$:
+\[
+\frac{\partial}{\partial \alpha^{i}_{m}}\!\left[\tfrac{1}{2}\sum_{j=1}^{n_m} C_{y_{m,j}}(\hat{y}_{m,j} - y_{m,j})^{2}\right] \;=\; \sum_{j=1}^{n_m} C_{y_{m,j}}\,(\hat{y}_{m,j} - y_{m,j})\,\big(\mathbf{x}^{i}_{m,j}\!\cdot\boldsymbol{\beta}^{i}\big)
+\]
+
+Read this in three pieces:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $(\hat{y}_{m,j} - y_{m,j})$ --- residual for sample $j$.
+  \item $C_{y_{m,j}}$ --- class-cost weight for sample $j$ (this is the cost-sensitive entry point).
+  \item $(\mathbf{x}^i_{m,j} \cdot \boldsymbol{\beta}^i)$ --- partial of $\hat{y}_{m,j}$ with respect to $\alpha^i_m$.
+\end{itemize}
+
+When $C \equiv 1$ the $C$ factors disappear and this is the gradient of paper eq (16). \checkmark
+
+The unit-ball constraint $\mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1$ is handled by projection inside FISTA, exactly as in the paper's discussion of eq (16).
+
+\subsection{Inner step 1b --- $\boldsymbol{\beta}$ update (global)}
+
+Stack profiles. The cost-sensitive version of paper's $g$ (eq 17):
+\[
+g^{C}(\boldsymbol{\beta}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\sum_{j=1}^{n_m} C_{y_{m,j}}\!\left(\hat{y}_{m,j} - y_{m,j}\right)^{2}
+\]
+
+The $\boldsymbol{\beta}$ subproblem:
+\begin{equation}
+\boxed{\;\min_{\boldsymbol{\beta}}\;\;g^{C}(\boldsymbol{\beta}) \;+\; \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})\;}
+\end{equation}
+
+\paragraph{Gradient with respect to $\boldsymbol{\beta}^i$} --- cost-sensitive version of paper eq (18):
+\begin{equation}
+\boxed{\;\nabla g^{C}(\boldsymbol{\beta}^{i}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{I}\!\left(m\,\&\,2^{S-i}\neq 0\right)\sum_{j=1}^{n_m} C_{y_{m,j}}\,(\hat{y}_{m,j} - y_{m,j})\,\alpha^{i}_{m}\,\mathbf{x}^{i}_{m,j}\;}
+\end{equation}
+
+Variables in this expression:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item $\mathbf{I}(m \,\&\, 2^{S-i} \neq 0)$ --- bitwise indicator from eq (18) of the paper. Equals $1$ iff source $i$ is present in profile $m$. \textbf{Identical to the paper.}
+  \item $\alpha^i_m \mathbf{x}^i_{m,j}$ --- the source-$i$ contribution from sample $j$ in profile $m$.
+  \item $(\hat{y}_{m,j} - y_{m,j})$ --- residual.
+  \item $C_{y_{m,j}}$ --- class-cost weight on the residual.
+\end{itemize}
+
+Compare to the paper's eq (18):
+\[
+\nabla g(\boldsymbol{\beta}^{i}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{I}\!\left(m\,\&\,2^{S-i}\neq 0\right)\,(\alpha^{i}_{m}\mathbf{X}^{i}_{m})^{T}\!\Big(\sum_{j}\alpha^{j}_{m}\mathbf{X}^{j}_{m}\boldsymbol{\beta}^{j} - \mathbf{y}_m\Big)
+\]
+
+The only difference: each per-sample term carries an extra $C_{y_{m,j}}$ factor. With $C \equiv 1$ the two gradients are identical. \checkmark
+
+The $\boldsymbol{\beta}$ subproblem is solved by accelerated gradient (FISTA), exactly as in Algorithm 2 of the paper. \textbf{No new machinery --- only the gradient picks up the $C_{y_{m,j}}$ weight.}
+
+%======================================================================
+\section{Step 2 --- fix $(\boldsymbol{\alpha}, \boldsymbol{\beta})$, solve $C$}
+%======================================================================
+
+Hold $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ fixed. The $\lambda \mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})$ term has no $C$ in it; drop it. The data-fitting term, with $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ fixed:
+\[
+\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{L}^{C}(\cdots) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\sum_{j=1}^{n_m} C_{y_{m,j}}\,(\hat{y}_{m,j} - y_{m,j})^{2}
+\]
+
+\subsection{Reduce to a linear function of $C$}
+
+Group every per-sample term by the class label $y_{m,j}$. Define for each $k \in \{1, \ldots, K\}$:
+\begin{equation}
+\boxed{\;L_k(\boldsymbol{\alpha},\boldsymbol{\beta}) \;=\; \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\!\!\sum_{\substack{j=1,\ldots,n_m \\ y_{m,j} = k}}\!\!(\hat{y}_{m,j} - y_{m,j})^{2}\;}
+\end{equation}
+
+$L_k$ is the \textbf{per-class loss coefficient}. With $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ fixed, it is just a positive number --- the total residual-squared contribution from samples of class $k$, weighted by the same $(1/|\mathbf{pf}|)(1/n_m)$ factors that appear in the iSFS objective.
+
+The data-fitting term is then \textbf{linear in $C$}:
+\[
+\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{n_m}\,\mathbf{L}^{C}(\cdots) \;=\; \sum_{k=1}^{K} C_k\,L_k(\boldsymbol{\alpha},\boldsymbol{\beta})
+\]
+
+So the $C$ subproblem is:
+\begin{equation}
+\boxed{\;\max_{C \in \mathcal{C}_\rho}\;\;\sum_{k=1}^{K} C_k\,L_k\;}
+\end{equation}
+
+This is \textbf{a linear function maximized over a convex compact set} --- closed form via KKT.
+
+\subsection{Closed-form derivation in 5 lines}
+
+\paragraph{Setup.} Re-parameterize $C$ by its deviation from the baseline:
+\[
+d \;=\; C - C^{0} \;\in\; \mathbb{R}^{K}
+\]
+The simplex constraint $\sum_k C_k = K$ and the fact $\sum_k C^0_k = K$ together force $\sum_k d_k = 0$. So $d$ lives in the hyperplane $H = \{d : \sum_k d_k = 0\}$.
+
+\paragraph{Re-write the objective as a function of $d$.} Using $\sum_k d_k = 0$:
+\[
+\sum_{k} C_k L_k \;=\; \underbrace{\sum_{k} C_k^{0} L_k}_{\text{constant}} \;+\; \sum_{k} d_k L_k \;=\; \text{const} \;+\; \sum_{k} d_k\,(L_k - \overline{L})
+\]
+where $\overline{L} = (1/K) \sum_k L_k$. The shift by $\overline{L}$ is free because $\sum_k d_k = 0$.
+
+\paragraph{Define the centered loss vector:}
+\[
+\widetilde{L} \;=\; L - \overline{L}\,\mathbf{1} \;\in\; H
+\]
+so the C subproblem becomes:
+\[
+\max_{d}\;\;d^{T}\widetilde{L}\quad\text{s.t.}\quad d \in H,\;\;\tfrac{1}{2}\|d\|_{2}^{2} \leq \rho,\;\;d_k \geq -C^{0}_{k}.
+\]
+
+\paragraph{Apply Cauchy--Schwarz} on the hyperplane $H$ (both $d$ and $\widetilde{L}$ live there). The maximizer of an inner product on a sphere is the unit vector aligned with the target:
+\[
+d^{*} \;=\; \sqrt{2\rho}\,\frac{\widetilde{L}}{\|\widetilde{L}\|_{2}}
+\]
+
+\paragraph{Convert back to $C$} via $C = C^0 + d$:
+\begin{equation}
+\boxed{\;C_k^{*} \;=\; C_k^{0} \;+\; \sqrt{2\rho}\;\frac{L_k - \overline{L}}{\|L - \overline{L}\,\mathbf{1}\|_{2}}\;}
+\end{equation}
+
+That is the entire $C$ block update. No iteration, no learning rate, no inner loop. Three quantities to compute:
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item $L_k$ for each class --- one pass over the residuals.
+  \item $\overline{L} = (1/K) \sum_k L_k$ --- average.
+  \item $\|L - \overline{L} \cdot \mathbf{1}\|_2$ --- norm of the centered vector.
+\end{enumerate}
+
+Plug into the boxed formula. $O(K)$ time, where $K = 2$ for binary.
+
+\subsection{Three sanity checks}
+
+\paragraph{Check 1 --- budget preserved ($\sum C_k = K$).}
+\[
+\sum_{k} C_k^{*} \;=\; \sum_{k} C_k^{0} \;+\; \sqrt{2\rho}\,\frac{\sum_{k}(L_k - \overline{L})}{\|\widetilde{L}\|_{2}} \;=\; K \;+\; \sqrt{2\rho}\cdot\frac{0}{\|\widetilde{L}\|_{2}} \;=\; K \quad \checkmark
+\]
+($\sum_k (L_k - \overline{L}) = 0$ by construction.)
+
+\paragraph{Check 2 --- ball constraint active ($\frac{1}{2}\|C - C^0\|^2 = \rho$).}
+\[
+\tfrac{1}{2}\|C^{*} - C^{0}\|^{2} \;=\; \tfrac{1}{2}\,2\rho\,\frac{\|\widetilde{L}\|^{2}}{\|\widetilde{L}\|^{2}} \;=\; \rho \quad \checkmark
+\]
+The maximizer always sits \textbf{on the boundary} of the ball --- the trust-region budget is fully spent.
+
+\paragraph{Check 3 --- direction is cost-sensitive ($C_k > C_k^0$ iff $L_k > \overline{L}$).}
+\[
+C_k^{*} - C_k^{0} \;=\; \sqrt{2\rho}\,\frac{L_k - \overline{L}}{\|\widetilde{L}\|_{2}}
+\]
+The sign of $C_k^* - C_k^0$ is the sign of $L_k - \overline{L}$:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item Class with above-average loss $\to$ upweighted.
+  \item Class with below-average loss $\to$ downweighted.
+\end{itemize}
+
+\checkmark This is the cost-sensitive direction.
+
+\subsection{$\rho \to 0$ recovers Option A}
+
+As $\rho \to 0$:
+\[
+C_k^{*} \;=\; C_k^{0} \;+\; \underbrace{\sqrt{2\rho}}_{\to 0}\cdot(\ldots) \;\longrightarrow\; C_k^{0}
+\]
+
+The $C$ update freezes at the inverse-frequency baseline. \textbf{Option A is the $\rho \to 0$ limit of Option B.} The DRO formulation interpolates smoothly between \emph{fixed cost-sensitive} and \emph{unconstrained adaptive}.
+
+\subsection{Non-negativity projection}
+
+The closed form above assumes the unconstrained-by-non-negativity solution stays non-negative. When $\rho$ is small or $\widetilde{L}$ is mild this is automatic. If $\rho$ is large enough that some $C_k^*$ would go negative:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item Identify the active set $A = \{k : C_k^* < 0\}$.
+  \item Peg those entries to $C_k = 0$.
+  \item Re-distribute the resulting deficit $K - \sum_{k \notin A} C_k^*$ proportionally onto the still-positive entries.
+\end{enumerate}
+
+For binary $K = 2$ this terminates in one extra step. In practice, $\rho$ is chosen small enough that this projection never triggers.
+
+%======================================================================
+\section{Algorithm 3 --- full pseudocode and numerical walkthrough}
+%======================================================================
+
+\subsection{Pseudocode (matches the style of Algorithm 2 in the paper)}
+
+\begin{algorithm}[H]
+\caption{Cost-Sensitive iSFS via Block Coordinate Descent}
+\begin{algorithmic}[1]
+\Require data $\{\mathbf{X}_m, \mathbf{y}_m \text{ for } m \in \mathbf{pf}\}$, baseline $C^0$, ball radius $\rho$, $\boldsymbol{\beta}$-regularization parameter $\lambda$, $\boldsymbol{\alpha}$-regularization $\mathbf{R}_{\boldsymbol{\alpha}}$
+\Ensure $\boldsymbol{\alpha}$ (per-profile weights), $\boldsymbol{\beta}$ (shared coefficients), $C$ (class costs)
+\State Initialize $\boldsymbol{\beta}^{(0)}$ by fitting each source individually on its available data (paper's Algorithm 2 init).
+\State Initialize $C^{(0)} \gets C^0$ (rescaled inverse-frequency baseline).
+\For{outer iteration $t = 1, 2, \ldots$}
+    \State \textbf{Block A --- fix $C^{(t-1)}$, solve $(\boldsymbol{\alpha}, \boldsymbol{\beta})$:}
+    \State Run paper's Algorithm 2 with $\mathbf{L}^C$ in place of $\mathbf{L}$:
+    \Repeat
+        \For{each profile $m$}
+            \State $\boldsymbol{\alpha}_m \gets$ solve eq (16) with $C_{y_{m,j}}$ weights
+        \EndFor
+        \State $\boldsymbol{\beta} \gets$ FISTA on $g^C(\boldsymbol{\beta}) + \lambda \mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})$, gradient $\nabla g^C(\boldsymbol{\beta}^i)$ per \S 5.2
+    \Until{inner objective stops decreasing}
+    \State \textbf{Block B --- fix $(\boldsymbol{\alpha}, \boldsymbol{\beta})$, solve $C$:}
+    \State For each class $k = 1, \ldots, K$ compute the per-class loss coefficient
+    \[
+        L_k = \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}}\frac{1}{2 n_m}\sum_{j: y_{m,j}=k}(\hat{y}_{m,j} - y_{m,j})^2
+    \]
+    \State $\overline{L} \gets (1/K) \sum_k L_k$
+    \State $\widetilde{L} \gets L - \overline{L}\cdot\mathbf{1}$
+    \State $C^{(t)} \gets C^0 + \sqrt{2\rho} \cdot \widetilde{L} / \|\widetilde{L}\|_2$ \Comment{Cauchy--Schwarz closed form}
+    \If{any $C_k^{(t)} < 0$}
+        \State Run the active-set projection from \S 6.5.
+    \EndIf
+    \If{$|C^{(t)} - C^{(t-1)}|_\infty < \epsilon$ \textbf{and} $\|\boldsymbol{\beta}^{(t)} - \boldsymbol{\beta}^{(t-1)}\|_2 < \epsilon$}
+        \State \Return $\boldsymbol{\alpha}^{(t)}, \boldsymbol{\beta}^{(t)}, C^{(t)}$
+    \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+Two outer blocks; three quantities to compute per outer iteration; no inner gradient loop on the C step.
+
+\subsection{Numerical walkthrough --- synthetic 3-profile dataset}
+
+\paragraph{Setup.} Two sources of two features each ($\boldsymbol{\beta} \in \mathbb{R}^4$). Three profiles. Class-imbalanced binary labels in $\{-1, +1\}$. Random seed \texttt{np.random.seed(11)}, \texttt{np.random.default\_rng(11)}. The dataset:
+
+\begin{center}
+\begin{tabular}{cccc}
+\toprule
+profile & mask & $n_m$ & labels $\mathbf{y}_m$ \\
+\midrule
+1 & source 1 only & 5 & $(-1, -1, -1, -1, +1)$ \\
+2 & source 2 only & 5 & $(+1, -1, -1, -1, -1)$ \\
+3 & both sources & 6 & $(-1, -1, -1, -1, +1, +1)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Class counts: $n_- = 12$, $n_+ = 4$, $N = 16$, $K = 2$. Inverse-frequency baseline:
+\[
+C^{0} \;=\; (0.5,\;1.5)
+\]
+
+Choose $\rho = 0.04$ (so $\sqrt{2\rho} = 0.2828$ --- modest trust region; $C$ can move at most $\pm 0.2$ from baseline in each component).
+
+\paragraph{Initialize $\boldsymbol{\beta}^{(0)}$} by per-source ridge regression on each source's available data:
+\[
+\boldsymbol{\beta}^{(0)} \;\approx\; (-0.6234,\;-0.5804,\;\;0.4264,\;\;0.7807)
+\]
+
+\paragraph{Outer iteration 1.}
+
+\emph{Block A} --- run inner BCD with $C = (0.5, 1.5)$. After 15 inner sweeps:
+\[
+\boldsymbol{\beta}^{(1)} \;\approx\; (-0.299,\;-0.507,\;\;0.423,\;\;0.722)
+\]
+
+\emph{Block B} --- compute per-class loss and apply the closed form:
+\[
+L \;\approx\; (0.2123,\;0.0091),\qquad \overline{L} \;\approx\; 0.1107,\qquad \widetilde{L} \;\approx\; (0.1016,\;-0.1016),\qquad \|\widetilde{L}\|_{2} \;\approx\; 0.1437
+\]
+\[
+C^{(1)} \;=\; (0.5,\;1.5) \;+\; 0.2828 \cdot \frac{(0.1016,\;-0.1016)}{0.1437} \;\approx\; (0.5 + 0.2,\;\;1.5 - 0.2) \;=\; (0.7,\;\;1.3)
+\]
+
+Sanity check: $\sum C_k = 2.0 = K$ \checkmark; $\frac{1}{2}\|C - C^0\|^2 = 0.04 = \rho$ \checkmark.
+
+\paragraph{Outer iteration 2.}
+
+\emph{Block A} --- re-run inner BCD with $C = (0.7, 1.3)$. After 15 inner sweeps:
+\[
+\boldsymbol{\beta}^{(2)} \;\approx\; (-0.426,\;-0.508,\;\;0.410,\;\;0.711)
+\]
+
+\emph{Block B} --- recompute the per-class losses:
+\[
+L \;\approx\; (0.1931,\;0.0142),\qquad \overline{L} \;\approx\; 0.1037,\qquad \widetilde{L} \;\approx\; (0.0895,\;-0.0895),\qquad \|\widetilde{L}\|_{2} \;\approx\; 0.1265
+\]
+\[
+C^{(2)} \;=\; (0.5,\;1.5) \;+\; 0.2828 \cdot \frac{(0.0895,\;-0.0895)}{0.1265} \;=\; (0.5 + 0.2,\;\;1.5 - 0.2) \;=\; (0.7,\;\;1.3)
+\]
+
+$C$ is unchanged from iteration 1. (For $K = 2$, the centered vector $\widetilde{L}$ always has the form $(a, -a)$, so its \textbf{direction} is $(1, -1)/\sqrt{2}$ whenever $L_- > L_+$. The C-step closed form depends only on this direction, so once the model is on the ``majority is harder'' side, $C$ is determined.)
+
+\paragraph{Trajectory table:}
+
+\begin{center}
+\small
+\begin{tabular}{cllll r}
+\toprule
+outer iter $t$ & $L$ & $\|\widetilde{L}\|_2$ & $C$ & $\boldsymbol{\beta}$ & $\Phi$ \\
+\midrule
+0 (init) & --- & --- & $(0.500, 1.500)$ & $(-0.623, -0.580, 0.426, 0.781)$ & --- \\
+1 & $(0.2123, 0.0091)$ & $0.1437$ & $(0.700, 1.300)$ & $(-0.299, -0.507, 0.423, 0.722)$ & $0.18662$ \\
+2 & $(0.1931, 0.0142)$ & $0.1265$ & $(0.700, 1.300)$ & $(-0.426, -0.508, 0.410, 0.711)$ & $0.18155$ \\
+3 & $(0.1931, 0.0142)$ & $0.1265$ & $(0.700, 1.300)$ & $(-0.426, -0.508, 0.410, 0.711)$ & $0.18155$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Converges in \textbf{2 outer iterations} to:
+\[
+\boldsymbol{\beta}^{*} \approx (-0.426,\;-0.508,\;\;0.410,\;\;0.711),\qquad C^{*} = (0.700,\;\;1.300),\qquad \Phi^{*} \approx 0.18155
+\]
+
+The minority-class weight settles at $1.3$ (down from baseline $1.5$) because in this dataset the \textbf{majority class has the larger total loss contribution} $L_- > L_+$ (more samples). The DRO step adapts the cost vector along the data-driven direction, while the inverse-frequency baseline $C^0 = (0.5, 1.5)$ keeps the minority weight above the majority weight overall.
+
+\subsection{Reproducible Python implementation}
+
+A self-contained Python implementation of Algorithm 3 (the inner BCD on $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ plus the closed-form $C$ update) is provided in the markdown version of this document, \path{cost_sensitive_iSFS_extension.md}, \S 7.3. Running it on the synthetic dataset above reproduces the trajectory in the table verbatim: $\Phi$ converges to $0.18155$ in two outer iterations, with $C^{*} = (0.7,\,1.3)$ and $\boldsymbol{\beta}^{*} \approx (-0.426,\,-0.508,\,0.410,\,0.711)$.
+
+The implementation is $\sim$80 lines of NumPy with no external dependencies beyond \texttt{numpy}.
+
+%======================================================================
+\section{Connection to BCD theory}
+%======================================================================
+
+\subsection{Multi-convex structure}
+
+Cost-sensitive iSFS sits inside the \textbf{multi-convex} family from \texttt{BCD\_explained.md} \S 3 / Aggarwal \S 4.10.2:
+
+\begin{center}
+\begin{tabular}{lllp{0.40\linewidth}}
+\toprule
+\textbf{block fixed} & \textbf{block updated} & \textbf{sub-problem} & \textbf{reason convex (or concave)} \\
+\midrule
+$\boldsymbol{\beta}, C$ & $\boldsymbol{\alpha}_m$ per profile & per-profile weighted least-squares & positive-semidefinite quadratic in $\boldsymbol{\alpha}_m$ \\
+$\boldsymbol{\alpha}, C$ & $\boldsymbol{\beta}$ & weighted regularized least-squares & positive-definite quadratic in $\boldsymbol{\beta}$ \\
+$\boldsymbol{\alpha}, \boldsymbol{\beta}$ & $C \in \mathcal{C}_\rho$ & linear-in-$C$ over a convex compact set & linear function on a convex polytope \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each block sub-problem has a \textbf{closed-form} solve. No learning rate, no line search inside a block.
+
+\subsection{What converges and what doesn't}
+
+Two facts coexist:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Inner BCD on $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ with $C$ fixed converges monotonically.} This is the standard multi-convex BCD theorem from Aggarwal \S 4.10.2: each step decreases the inner objective, so the inner loop is monotone.
+  \item \textbf{The outer trajectory is \emph{not} a strict monotonic decrease in $\Phi$} --- the C-block is a $\max$, so it can increase $\Phi$ between iterations even though the $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ block decreases it. The right invariant for the outer loop is the \textbf{saddle-point gap}:
+\end{enumerate}
+\[
+\text{gap}(\boldsymbol{\alpha}, \boldsymbol{\beta}, C) \;=\; \max_{C' \in \mathcal{C}_\rho}\Phi(\boldsymbol{\alpha},\boldsymbol{\beta},C') \;-\; \min_{\boldsymbol{\alpha}',\boldsymbol{\beta}'}\Phi(\boldsymbol{\alpha}',\boldsymbol{\beta}',C)
+\]
+
+Under standard conditions (strong convexity in $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ and the bounded-set constraint on $C$), saddle-point alternation reduces the gap to zero. In our numerical experiment the gap effectively closes in two outer iterations because for $K = 2$ the C direction is determined by the sign of $L_- - L_+$, which is fixed once the model is in the ``majority is harder'' or ``minority is harder'' regime.
+
+\subsection{Connection to the textbook BCD case studies}
+
+The cost-sensitive iSFS BCD is structurally identical to the case studies in \texttt{BCD\_explained.md}:
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{K-means as BCD} (Aggarwal \S 4.10.3): two blocks, centroids and assignments, each with a closed-form optimum (mean and nearest-prototype). Cost-sensitive iSFS does the same with $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ and $C$, using weighted normal equations and a Cauchy--Schwarz projection.
+  \item \textbf{ALS as BCD} (Aggarwal \S 8.3.2.3): two blocks $(U, V)$, each row solved as an independent ridge regression. Cost-sensitive iSFS's $\boldsymbol{\beta}$ update is structurally the same --- one global weighted ridge solve.
+  \item \textbf{\texttt{opt.impute}} (Bertsimas et al.\ JMLR 2018): two blocks, auxiliary state $U$ and imputations $(W, V)$, alternated. Cost-sensitive iSFS adds a third ``auxiliary state'' ($C$) and treats it the same way.
+\end{itemize}
+
+The trade-off Aggarwal flags (\S 4.10.2) applies directly:
+
+\begin{quote}
+``Each step in block coordinate descent is more expensive, but fewer steps are required.''
+\end{quote}
+
+For our cost-sensitive iSFS at moderate $n$ and small $K$, the closed-form block solves are by far the cheapest option.
+
+\subsection{Practical recommendations}
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Set $C^0$ to the rescaled inverse-frequency baseline} --- $C^0_k = K(1/n_k) / \sum_j(1/n_j)$. This is the cost-sensitive prior.
+  \item \textbf{Pick $\rho$ by cross-validation} --- sweep e.g.\ $\rho \in \{0.01, 0.04, 0.1, 0.25, 0.5, 1.0\}$ and choose the one with best validation performance. $\rho \to 0$ recovers Option A.
+  \item \textbf{Pick $\lambda$ (the $\boldsymbol{\beta}$ ridge / sparsity reg) by cross-validation} --- same as in the original iSFS Algorithm 2.
+  \item \textbf{Run inner BCD to a loose tolerance.} Aggarwal's monotonic-decrease guarantee makes the inner loop forgiving --- 10--20 inner sweeps per outer iteration is enough.
+  \item \textbf{Stop on $(C, \boldsymbol{\beta})$ infinity-norm change}, not on $\Phi$ --- the saddle-point trajectory of $\Phi$ may not be strictly monotonic, but the iterates themselves stabilize quickly.
+\end{itemize}
+
+\subsection{What is non-trivial here}
+
+The non-trivial pieces of this extension are:
+
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Recognizing that pure-min in $C$ has the wrong sign.} This is the subtlety that motivates the saddle-point framing.
+  \item \textbf{Recognizing that a regularizer $\mathbf{R}_C(C)$ is conceptually wrong.} $C$ is not a model parameter; it lives in a constraint set, not in the objective.
+  \item \textbf{Picking a constraint set $\mathcal{C}_\rho$ that admits a closed-form max} of a linear function. The chi-squared / L2 ball intersected with the simplex gives the cleanest Cauchy--Schwarz solution.
+  \item \textbf{Anchoring $C^0$ to inverse frequency} so the saddle-point smoothly contains classical fixed-cost cost-sensitive learning as the $\rho \to 0$ limit.
+  \item \textbf{Recognizing that the $(\boldsymbol{\alpha}, \boldsymbol{\beta})$ block is itself an inner BCD.} The two-level nesting lets us inherit the original Algorithm 2 wholesale, with only the $C_{y_{m,j}}$ weight inserted into the gradient.
+\end{enumerate}
+
+%======================================================================
+\section{Quick reference card}
+%======================================================================
+
+\begin{center}
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{symbol} & \textbf{meaning} & \textbf{where it lives} \\
+\midrule
+$\alpha^i_m \in \mathbb{R}$ & source-$i$ weight for profile $m$ & inner block, $\mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1$ \\
+$\boldsymbol{\beta}^i \in \mathbb{R}^{p_i}$ & shared feature coefficients for source $i$ & inner block, $\mathbf{R}_{\boldsymbol{\beta}}$ regularized \\
+$C \in \mathbb{R}^K$ & per-class cost vector & outer block, $C \in \mathcal{C}_\rho$ \\
+$C^0 \in \mathbb{R}^K$ & rescaled inverse-frequency baseline & user-chosen prior \\
+$\rho$ & trust-region radius around $C^0$ & hyperparameter (cross-validated) \\
+$\lambda$ & strength of $\mathbf{R}_{\boldsymbol{\beta}}$ & hyperparameter (cross-validated) \\
+$L_k$ & per-class loss coefficient & recomputed every C step \\
+$\overline{L} = (1/K) \sum_k L_k$ & average per-class loss & recomputed every C step \\
+$\widetilde{L} = L - \overline{L} \cdot \mathbf{1}$ & centered loss vector & recomputed every C step \\
+$\hat{y}_{m,j}$ & per-sample model prediction $\sum_i \alpha^i_m \mathbf{x}^i_{m,j} \cdot \boldsymbol{\beta}^i$ & computed inside both blocks \\
+$C_{y_{m,j}}$ & class-cost lookup for sample $j$ in profile $m$ & scalar from the $K$-vector $C$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+
+\begin{center}
+\small
+\begin{tabular}{lp{0.50\linewidth}p{0.30\linewidth}}
+\toprule
+\textbf{update} & \textbf{formula} & \textbf{meaning} \\
+\midrule
+$\boldsymbol{\alpha}_m$ & $\arg\min$ of $\frac{1}{2}\sum_j C_{y_{m,j}}(\hat{y}-y)^2$ s.t.\ $\mathbf{R}_{\boldsymbol{\alpha}} \leq 1$ & weighted per-profile constrained LS \\
+$\boldsymbol{\beta}$ & $\arg\min$ of $g^C(\boldsymbol{\beta}) + \lambda \mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})$ via FISTA, gradient $\nabla g^C(\boldsymbol{\beta}^i)$ & weighted regularized LS \\
+$C$ & $C_k^* = C_k^0 + \sqrt{2\rho}\cdot(L_k - \overline{L}) / \|\widetilde{L}\|_2$ & Cauchy--Schwarz projection onto $\mathcal{C}_\rho$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{theoretical fact} & \textbf{source} \\
+\midrule
+BCD with closed-form block updates monotonically decreases the inner objective on multi-convex problems & Aggarwal \S 4.10.2; \texttt{BCD\_explained.md} \S 3 \\
+The chi-squared ball DRO with linear inner objective has a closed-form Cauchy--Schwarz max & Namkoong \& Duchi (2017) \\
+DRO with chi-squared ball is principled cost-sensitive learning & Hu, Niu, Sato, Sugiyama (2018) \\
+The original iSFS Algorithm 2 (2-block BCD on $\boldsymbol{\alpha}, \boldsymbol{\beta}$) is the inner loop here & Xiang et al.\ (2013), \S 3.2 \\
+$K$-means and ALS are the canonical 2-block BCD examples this method generalizes & Aggarwal \S 4.10.3 and \S 8.3.2.3; \texttt{BCD\_explained.md} \S 4--5 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+
+\begin{center}
+\emph{Cost-sensitive iSFS via DRO is a strict generalization of the original iSFS model: setting $\rho \to 0$ pins $C$ to the inverse-frequency baseline and recovers classical fixed-cost cost-sensitive learning, while finite $\rho$ lets the optimization adapt $C$ from the data via the closed-form Cauchy--Schwarz projection step that fits inside the same BCD machinery the rest of the model already uses.}
+\end{center}
+
+\end{document}

@@ -1,0 +1,436 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{geometry}
+\usepackage{hyperref}
+
+\geometry{margin=1in}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\title{Multi-Source Learning with Block-Wise Missing Data\\[6pt]
+\large Core Formulations and Optimization Notes}
+\author{Study Notes}
+\date{}
+
+\begin{document}
+\maketitle
+
+%======================================================================
+% CHAPTER 2
+%======================================================================
+\section{Unified Feature Learning Model for Multi-Source Data}
+
+\subsection{Setup}
+
+Given $m$ samples from $S$ data sources:
+\[
+\mathbf{X} = [\mathbf{X}_1, \mathbf{X}_2, \ldots, \mathbf{X}_S] \in \mathbb{R}^{m \times n}, \quad \mathbf{y} \in \mathbb{R}^m,
+\]
+where $\mathbf{X}_i \in \mathbb{R}^{m \times p_i}$ is the data matrix of the $i$th source (each sample is a $p_i$-dimensional vector), and $\mathbf{y}$ is the outcome. The linear model is:
+\begin{equation}
+\mathbf{y} = \sum_{i=1}^{S} \mathbf{X}_i \boldsymbol{\beta}_i + \boldsymbol{\epsilon} = \mathbf{X}\boldsymbol{\beta} + \boldsymbol{\epsilon},
+\end{equation}
+where each column of $\mathbf{X}$ is normalized to zero mean and unit standard deviation, and $\boldsymbol{\epsilon}$ is the noise term.
+
+\subsection{The Bi-Level Formulation}
+
+The goal is to perform both \textbf{feature-level} and \textbf{source-level} analysis simultaneously. The bi-level model learns a model $\boldsymbol{\alpha}_i$ on each source, then combines them via weights $\gamma_i$:
+\begin{equation}
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\gamma}} \;\;
+\frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S} \gamma_i \cdot \mathbf{X}_i \boldsymbol{\alpha}_i \right\|_2^2
++ \sum_{i=1}^{S} \frac{\lambda_i}{p}\|\boldsymbol{\alpha}_i\|_p^p
++ \sum_{i=1}^{S} \frac{\eta_i}{q}|\gamma_i|^q,
+\end{equation}
+where the regularization on $\boldsymbol{\alpha}$ controls feature-level sparsity (via $p$) and the regularization on $\gamma$ controls source-level sparsity (via $q$). This problem is \emph{not jointly convex}.
+
+\subsection{Equivalent Simplified Form (Theorem~1)}
+
+\begin{theorem}
+Formulation (2) is equivalent to:
+\begin{equation}
+\min_{\boldsymbol{\beta}} \;\;
+\frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S} \mathbf{X}_i \boldsymbol{\beta}_i \right\|_2^2
++ \sum_{i=1}^{S} \nu_i \|\boldsymbol{\beta}_i\|_p^{\frac{pq}{p+q}}.
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Assume $\boldsymbol{\alpha}_i \neq \mathbf{0}$ for all $i$ (if $\boldsymbol{\alpha}_i = \mathbf{0}$, then the optimal $\gamma_i = 0$ and both can be dropped). Substitute $\boldsymbol{\beta}_i = \gamma_i \cdot \boldsymbol{\alpha}_i$ and replace $\gamma_i$ with $\frac{\|\boldsymbol{\beta}_i\|_p}{\|\boldsymbol{\alpha}_i\|_p}$ to get the equivalent form:
+\begin{equation}
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}} \;\;
+\frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S} \mathbf{X}_i \boldsymbol{\beta}_i \right\|_2^2
++ \sum_{i=1}^{S} \frac{\lambda_i}{p}\|\boldsymbol{\alpha}_i\|_p^p
++ \sum_{i=1}^{S} \frac{\eta_i}{q}\left(\frac{\|\boldsymbol{\beta}_i\|_p}{\|\boldsymbol{\alpha}_i\|_p}\right)^q.
+\end{equation}
+
+Taking the partial derivative with respect to $\boldsymbol{\alpha}_i$ and setting it to zero:
+\begin{equation}
+\eta_i \|\boldsymbol{\beta}_i\|_p^q = \lambda_i \|\boldsymbol{\alpha}_i\|_p^{p+q}, \quad i = 1,2,\ldots,S.
+\end{equation}
+
+Substituting (5) back into (4) with a change of variables gives formulation (3). \qedhere
+\end{proof}
+
+%----------------------------------------------------------------------
+\subsection{Relation to Existing Models}
+
+Different choices of $p$ and $q$ yield known models as special cases:
+
+\begin{itemize}
+    \item \textbf{Lasso} ($p=1,\; q=\infty$):
+    \begin{equation}
+    \min_{\boldsymbol{\beta}} \;\; \frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S}\mathbf{X}_i\boldsymbol{\beta}_i\right\|_2^2 + \lambda\|\boldsymbol{\beta}\|_1.
+    \end{equation}
+    Feature-level sparsity only; ignores source structure.
+
+    \item \textbf{Group Lasso} ($p=2,\; q=2$), with $\nu_i = \lambda\sqrt{p_i}$:
+    \begin{equation}
+    \min_{\boldsymbol{\beta}} \;\; \frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S}\mathbf{X}_i\boldsymbol{\beta}_i\right\|_2^2 + \lambda\sum_{i=1}^{S}\sqrt{p_i}\,\|\boldsymbol{\beta}_i\|_2.
+    \end{equation}
+    Source-level sparsity; selects/discards entire sources.
+
+    \item \textbf{$\ell_{1,\infty}$ model} ($p=\infty,\; q=1$):
+    \begin{equation}
+    \min_{\boldsymbol{\beta}} \;\; \frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S}\mathbf{X}_i\boldsymbol{\beta}_i\right\|_2^2 + \sum_{i=1}^{S}\nu_i\|\boldsymbol{\beta}_i\|_\infty.
+    \end{equation}
+
+    \item \textbf{Non-convex: FRAC(1,2)} ($p=1,\; q=2$):
+    \begin{equation}
+    \min_{\boldsymbol{\beta}} \;\; \frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S}\mathbf{X}_i\boldsymbol{\beta}_i\right\|_2^2 + \sum_{i=1}^{S}\nu_i\|\boldsymbol{\beta}_i\|_1^{2/3}.
+    \end{equation}
+
+    \item \textbf{Non-convex: FRAC(2,1)} ($p=2,\; q=1$):
+    \begin{equation}
+    \min_{\boldsymbol{\beta}} \;\; \frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S}\mathbf{X}_i\boldsymbol{\beta}_i\right\|_2^2 + \sum_{i=1}^{S}\nu_i\|\boldsymbol{\beta}_i\|_2^{2/3}.
+    \end{equation}
+\end{itemize}
+
+%----------------------------------------------------------------------
+\subsection{Optimization via DC Programming}
+
+We focus on FRAC(2,1), i.e.\ formulation (10). The regularization $f(\boldsymbol{\beta}) = \|\boldsymbol{\beta}\|_2^{2/3}$ is \emph{neither convex nor concave} w.r.t.\ $|\boldsymbol{\beta}|$ (unless $\boldsymbol{\beta}$ is a scalar).
+
+\begin{proposition}
+Let $f(\boldsymbol{\beta}) = \|\boldsymbol{\beta}\|_2^{2/3}$. Then $f$ is neither convex nor concave w.r.t.\ $|\boldsymbol{\beta}|$ unless $\boldsymbol{\beta}$ is a scalar.
+\end{proposition}
+
+\noindent\textbf{Key idea:} Introduce auxiliary variables $t_i$ and reformulate (10) as:
+\begin{equation}
+\min_{\boldsymbol{\beta},\,\mathbf{t}} \;\;
+\frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S}\mathbf{X}_i\boldsymbol{\beta}_i\right\|_2^2
++ \sum_{i=1}^{S}\nu_i\, t_i^{2/3}
+\quad\text{s.t.}\quad \|\boldsymbol{\beta}_i\|_2 \leq t_i,\;\; i=1,\ldots,S.
+\end{equation}
+
+Now $t_i^{2/3}$ is concave in $t_i$. Apply DC decomposition:
+\[
+t_i^{2/3} = t_i - \left(t_i - t_i^{2/3}\right).
+\]
+
+Linearize the convex part $\left(t_i - t_i^{2/3}\right)$ at the previous iterate $\hat{t}_i$ via first-order Taylor expansion:
+\[
+\left(t_i - t_i^{2/3}\right) \approx \left(\hat{t}_i - \hat{t}_i^{2/3}\right) + \left(1 - \tfrac{2}{3}\hat{t}_i^{-1/3}\right)(t_i - \hat{t}_i).
+\]
+
+After substitution and dropping constants, and noting that all constraints are active at optimality, each DC iteration reduces to a \textbf{group lasso} subproblem:
+\begin{equation}
+\min_{\boldsymbol{\beta}} \;\;
+\frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S}\mathbf{X}_i\boldsymbol{\beta}_i\right\|_2^2
++ \sum_{i=1}^{S} \frac{2}{3}\hat{t}_i^{-1/3}\,\nu_i\,\|\boldsymbol{\beta}_i\|_2.
+\end{equation}
+
+After solving for $\boldsymbol{\beta}$, update $\hat{t}_i \leftarrow \|\boldsymbol{\beta}_i\|_2$ and repeat.
+
+%----------------------------------------------------------------------
+\subsection{Algorithm 1: DC Algorithm for FRAC(2,1)}
+
+\begin{algorithm}[H]
+\caption{DC Algorithm for solving formulation (10)}
+\begin{algorithmic}[1]
+\REQUIRE $\mathbf{X},\; \mathbf{y},\; \boldsymbol{\nu}$
+\ENSURE Solution $\boldsymbol{\beta}$ to (10)
+\STATE Initialize smoothing parameter $\theta > 0$, and weights $\mu_i^{(0)}$ for $i = 1,\ldots,S$
+\FOR{each iteration $k = 1, 2, \ldots$}
+    \STATE \textbf{Solve group lasso subproblem:}
+    \[
+    \hat{\boldsymbol{\beta}}^k = \arg\min_{\boldsymbol{\beta}\in\mathbb{R}^n} \;\;
+    \frac{1}{2}\left\|\mathbf{y} - \sum_{i=1}^{S}\mathbf{X}_i\boldsymbol{\beta}_i\right\|_2^2
+    + \sum_{i=1}^{S} \mu_i^{k-1}\|\boldsymbol{\beta}_i\|_2
+    \]
+    \STATE \textbf{Update weights:}
+    \[
+    \mu_i^{k} = \frac{2}{3}\,\nu_i\,\bigl(\|\hat{\boldsymbol{\beta}}_i^k\|_2 + \theta\bigr)^{-1/3}, \quad i = 1,\ldots,S
+    \]
+    \IF{objective stops decreasing}
+        \RETURN $\boldsymbol{\beta} = \hat{\boldsymbol{\beta}}^k$
+    \ENDIF
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\begin{remark}
+FRAC(1,2) (model (9)) is solved in the same way, except each inner iteration solves a \textbf{weighted Lasso} problem instead of group lasso.
+\end{remark}
+
+\begin{remark}
+The derivations extend to other convex loss functions (e.g.\ logistic loss) by replacing the least squares term.
+\end{remark}
+
+
+%======================================================================
+% CHAPTER 3
+%======================================================================
+\newpage
+\section{Incomplete Source-Feature Selection (iSFS) Model}
+
+\subsection{Problem Setting: Block-Wise Missing Data}
+
+In practice, patients often lack entire data sources (e.g.\ no PET scan), creating \textbf{block-wise} missing patterns. For $S$ sources, each patient's availability is described by a binary indicator $I[1\cdots S]$ where $I[i]=1$ if source $i$ is present. Converting this binary vector to a decimal integer gives a \textbf{profile}. All profiles are stored in a vector $\mathbf{pf}[1\cdots n]$ for $n$ participants.
+
+There are at most $2^S - 1$ possible profiles (excluding the case where all sources are missing).
+
+\subsection{Key Design Intuition}
+
+The strategy mirrors the complete-data bi-level model but adapts to missing blocks:
+\begin{enumerate}
+    \item \textbf{Partition} the data into groups based on which sources are available (patients sharing the same set of available sources form a group).
+    \item \textbf{Learn a consistent model} $\boldsymbol{\beta}$ across all groups (the feature-level coefficients for each source are shared).
+    \item \textbf{Learn adaptive weights} $\boldsymbol{\alpha}_m$ within each source combination $m$ (the source-level weights may differ across groups).
+\end{enumerate}
+
+Unlike the iMSF method (Yuan et al., 2012):
+\begin{itemize}
+    \item Groups are \emph{not disjoint}---a patient can appear in multiple groups, giving more samples per group.
+    \item The model $\boldsymbol{\beta}_i$ for source $i$ is \emph{consistent} across groups.
+    \item Source selection is achieved by driving $\alpha$ weights to zero.
+\end{itemize}
+
+\subsection{The iSFS Formulation}
+
+\begin{equation}
+\boxed{
+\min_{\boldsymbol{\alpha},\,\boldsymbol{\beta}} \;\;
+\frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} f(\mathbf{X}_m, \boldsymbol{\beta}, \boldsymbol{\alpha}_m, \mathbf{y}_m)
++ \lambda\, \mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+\quad\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}_m) \leq 1 \;\;\forall\, m \in \mathbf{pf}
+}
+\end{equation}
+where the data-fitting term for each profile group is:
+\begin{equation}
+f(\mathbf{X}, \boldsymbol{\beta}, \boldsymbol{\alpha}, \mathbf{y})
+= \frac{1}{n}\,\mathbf{L}\!\left(\sum_{i=1}^{S} \alpha^i \mathbf{X}^i \boldsymbol{\beta}^i,\;\mathbf{y}\right),
+\end{equation}
+and:
+\begin{itemize}
+    \item The subscript $m$ restricts to samples whose profile contains $m$.
+    \item $\mathbf{X}^i$ and $\boldsymbol{\beta}^i$ are the data matrix and model for source $i$.
+    \item $\mathbf{L}$ is any convex loss (least squares, logistic, etc.).
+    \item $\mathbf{R}_{\boldsymbol{\alpha}}$ and $\mathbf{R}_{\boldsymbol{\beta}}$ are regularizers on the source weights and feature coefficients.
+    \item $n$ is the number of rows of $\mathbf{X}$ in that group.
+\end{itemize}
+
+This formulation is \emph{not jointly convex} in $(\boldsymbol{\alpha}, \boldsymbol{\beta})$, so we solve it via alternating minimization.
+
+%----------------------------------------------------------------------
+\subsection{Optimization: Alternating Minimization}
+
+\subsubsection{Step 1: Compute $\boldsymbol{\alpha}$ when $\boldsymbol{\beta}$ is fixed}
+
+When $\boldsymbol{\beta}$ is fixed, the objective decouples across profiles. For each profile $m$, solve independently:
+\begin{equation}
+\min_{\boldsymbol{\alpha}} \;\;
+\left\|\sum_{i=1}^{S} \alpha^i \mathbf{X}^i \boldsymbol{\beta}^i - \mathbf{y}\right\|_2^2
+\quad\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}) \leq 1.
+\end{equation}
+
+This is a constrained regression problem. For standard choices of $\mathbf{R}_{\boldsymbol{\alpha}}$ (ridge, $\ell_1$, or other sparsity penalties), it can be solved efficiently via the accelerated gradient algorithm (FISTA).
+
+\textbf{Interpretation:} For each group of patients sharing the same available sources, we find the best weighting of those sources to combine their predictions.
+
+\subsubsection{Step 2: Compute $\boldsymbol{\beta}$ when $\boldsymbol{\alpha}$ is fixed}
+
+When $\boldsymbol{\alpha}$ is fixed, the formulation becomes an unconstrained regularization problem:
+\begin{equation}
+\min_{\boldsymbol{\beta}} \;\; g(\boldsymbol{\beta}) + \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta}),
+\end{equation}
+where:
+\begin{equation}
+g(\boldsymbol{\beta}) = \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} \frac{1}{2n_m}
+\left\|\sum_{i=1}^{S} \bigl(\alpha_m^i \mathbf{X}_m^i\bigr)\boldsymbol{\beta}_m^i - \mathbf{y}_m\right\|_2^2,
+\end{equation}
+and $n_m$ is the number of samples with profile $m$.
+
+Since $g(\boldsymbol{\beta})$ is quadratic in $\boldsymbol{\beta}$, this is a standard ``quadratic + regularizer'' problem solvable by accelerated gradient methods, provided the proximal operator of $\mathbf{R}_{\boldsymbol{\beta}}$ is efficient.
+
+\paragraph{Gradient computation.} For each source $i$, the gradient of $g$ with respect to $\boldsymbol{\beta}^i$ is:
+\begin{equation}
+\nabla g(\boldsymbol{\beta}^i) = \frac{1}{|\mathbf{pf}|}\sum_{m \in \mathbf{pf}} \frac{1}{n_m}\,
+\mathbf{I}\!\left(m\;\&\; 2^{S-i} \neq 0\right)\;
+\bigl(\alpha_m^i \mathbf{X}_m^i\bigr)^T
+\left(\sum_{j=1}^{S}\alpha_m^j \mathbf{X}_m^j \boldsymbol{\beta}_m^j - \mathbf{y}_m\right),
+\end{equation}
+where $\mathbf{I}(\cdot)$ is the indicator function (equals 1 when the condition holds), and $m\;\&\; 2^{S-i} \neq 0$ checks whether source $i$ is available in profile $m$ (bitwise AND).
+
+The full gradient $\nabla g(\boldsymbol{\beta})$ is obtained by stacking $\nabla g(\boldsymbol{\beta}^i)$ for $i = 1, \ldots, S$.
+
+%----------------------------------------------------------------------
+\subsection{Algorithm 2: Alternating Minimization for iSFS}
+
+\begin{algorithm}[H]
+\caption{Alternating Minimization for solving iSFS (formulation (13))}
+\begin{algorithmic}[1]
+\REQUIRE Data $\mathbf{X}$, labels $\mathbf{y}$, regularization parameter $\lambda$
+\ENSURE Solution $\boldsymbol{\alpha},\; \boldsymbol{\beta}$
+\STATE \textbf{Initialize:} $(\boldsymbol{\beta}^i)^0$ by fitting each source individually on its available data
+\FOR{$k = 1, 2, \ldots$}
+    \STATE \textbf{Update $\boldsymbol{\alpha}$:} For each profile $m \in \mathbf{pf}$, solve the constrained problem:
+    \[
+    (\boldsymbol{\alpha}_m)^k = \arg\min_{\boldsymbol{\alpha}}\;
+    \left\|\sum_{i=1}^{S} \alpha^i \mathbf{X}_m^i \boldsymbol{\beta}_m^i - \mathbf{y}_m\right\|_2^2
+    \quad\text{s.t.}\quad \mathbf{R}_{\boldsymbol{\alpha}}(\boldsymbol{\alpha}) \leq 1
+    \]
+    \STATE \textbf{Update $\boldsymbol{\beta}$:} Solve the regularized problem using $(\boldsymbol{\alpha})^k$:
+    \[
+    (\boldsymbol{\beta})^k = \arg\min_{\boldsymbol{\beta}}\; g(\boldsymbol{\beta}) + \lambda\,\mathbf{R}_{\boldsymbol{\beta}}(\boldsymbol{\beta})
+    \]
+    where $g(\boldsymbol{\beta})$ is computed via Eq.~(17) with gradient from Eq.~(18).
+    \IF{objective stops decreasing}
+        \RETURN $\boldsymbol{\beta} = (\boldsymbol{\beta})^k$
+    \ENDIF
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+%----------------------------------------------------------------------
+\subsection{Important Remarks}
+
+\begin{remark}[Extension to logistic loss]
+The model extends directly to classification. Computing $\boldsymbol{\alpha}$ in Step 1 becomes a constrained logistic regression; computing $\boldsymbol{\beta}$ in Step 2 becomes a regularized logistic regression. Any convex loss works as long as the gradient is available.
+\end{remark}
+
+\begin{remark}[Flexible regularization]
+Different forms of $\mathbf{R}_{\boldsymbol{\alpha}}$ and $\mathbf{R}_{\boldsymbol{\beta}}$ can be used to capture complex structures, as long as the proximal operator is efficient. Using the $\ell_1$-norm for both achieves simultaneous feature-level and source-level selection.
+\end{remark}
+
+\begin{remark}[Special case: uniform weights]
+Setting $\alpha_m = \frac{1}{n_m}$ for every profile $m$ removes the $\boldsymbol{\alpha}$ variable entirely. The optimization reduces to a convex problem in $\boldsymbol{\beta}$ alone---effectively an extension of Lasso to block-wise missing data.
+\end{remark}
+
+%----------------------------------------------------------------------
+\subsection{Summary: How iSFS Avoids Imputation}
+
+Standard imputation methods (EM, SVD, matrix completion) try to fill in the missing blocks before learning. This is problematic because:
+\begin{enumerate}
+    \item They ignore the \emph{block-wise} pattern of missingness.
+    \item High dimensionality means estimating many missing values, leading to instability.
+\end{enumerate}
+
+The iSFS model avoids imputation entirely by:
+\begin{enumerate}
+    \item Grouping patients by their available-source profiles.
+    \item Within each group, all data is complete---no imputation needed.
+    \item Learning shared feature coefficients $\boldsymbol{\beta}$ and group-specific source weights $\boldsymbol{\alpha}$ via alternating minimization.
+    \item Noisy or irrelevant sources are automatically discarded when their $\alpha$ weights go to zero.
+\end{enumerate}
+
+
+
+%======================================================================
+% CHAPTER 3
+%======================================================================
+\newpage
+\section{Handling Class Imbalance}
+ 
+Class imbalance occurs when the number of samples in one class significantly outnumbers the other(s). In the context of Alzheimer's disease, certain diagnostic categories (e.g.\ progressive MCI) are naturally underrepresented. Standard classifiers trained on imbalanced data tend to be biased toward the majority class, resulting in poor sensitivity for the minority class.
+ 
+Methods for handling imbalance broadly fall into two categories: \textbf{data-level methods} (which modify the training data) and \textbf{algorithm-level methods} (which modify the learning algorithm itself).
+ 
+%----------------------------------------------------------------------
+\subsection{Data-Level Methods}
+ 
+Data-level approaches rebalance the class distribution of the training set \emph{before} learning. Three widely used strategies are described below.
+ 
+\subsubsection{Random Undersampling}
+ 
+Random undersampling reduces the majority class by randomly removing samples until the class distribution is more balanced. While simple and fast, it risks discarding potentially informative majority-class examples, which can increase the variance of the learned model and hurt generalization.
+ 
+\medskip
+\noindent\textbf{Key reference:}
+\begin{quote}
+H.\ He and E.\ A.\ Garcia, ``Learning from imbalanced data,'' \textit{IEEE Transactions on Knowledge and Data Engineering}, vol.~21, no.~9, pp.~1263--1284, 2009.
+\end{quote}
+ 
+\subsubsection{Random Oversampling}
+ 
+Random oversampling increases the minority class by randomly duplicating existing minority samples. This preserves all majority-class information but can lead to \emph{overfitting}, since the classifier may memorize the repeated minority examples rather than learning a generalizable boundary.
+ 
+\medskip
+\noindent\textbf{Key reference:}
+\begin{quote}
+G.\ E.\ A.\ P.\ A.\ Batista, R.\ C.\ Prati, and M.\ C.\ Monard, ``A study of the behavior of several methods for balancing machine learning training data,'' \textit{ACM SIGKDD Explorations Newsletter}, vol.~6, no.~1, pp.~20--29, 2004.
+\end{quote}
+ 
+\subsubsection{SMOTE (Synthetic Minority Oversampling Technique)}
+ 
+SMOTE generates \emph{synthetic} minority samples rather than duplicating existing ones. For each minority sample $\mathbf{x}_i$, it selects one of its $k$ nearest minority-class neighbors $\mathbf{x}_{nn}$ and creates a new sample via interpolation:
+\[
+\mathbf{x}_{\text{new}} = \mathbf{x}_i + \delta \cdot (\mathbf{x}_{nn} - \mathbf{x}_i), \quad \delta \sim \text{Uniform}(0, 1).
+\]
+This broadens the minority class decision region without exact duplication, reducing overfitting compared to random oversampling. However, SMOTE can generate noisy samples when minority instances lie near the class boundary or within majority-class regions.
+ 
+\medskip
+\noindent\textbf{Key reference:}
+\begin{quote}
+N.\ V.\ Chawla, K.\ W.\ Bowyer, L.\ O.\ Hall, and W.\ P.\ Kegelmeyer, ``SMOTE: Synthetic minority over-sampling technique,'' \textit{Journal of Artificial Intelligence Research}, vol.~16, pp.~321--357, 2002.
+\end{quote}
+ 
+ 
+%----------------------------------------------------------------------
+\subsection{Algorithm-Level Methods}
+ 
+Algorithm-level approaches modify the learning process itself to account for class imbalance, typically by adjusting the loss function or the model's internal weighting.
+ 
+\subsubsection{Cost-Sensitive Learning}
+ 
+Cost-sensitive learning assigns \textbf{higher misclassification penalties to minority-class errors}. Instead of minimizing the overall error rate, the objective becomes minimizing the \emph{total misclassification cost}:
+\[
+\text{Total Cost} = C(0,1) \times \text{FN} + C(1,0) \times \text{FP},
+\]
+where $C(0,1)$ is the cost of a false negative (missing a minority-class sample) and $C(1,0)$ is the cost of a false positive. Typically $C(0,1) \gg C(1,0)$ to reflect the fact that failing to detect the minority class (e.g.\ disease) is more costly.
+ 
+The cost matrix can be incorporated into virtually any classifier (SVM, decision trees, logistic regression) by weighting the loss contributions of each class during training.
+ 
+\medskip
+\noindent\textbf{Key references:}
+\begin{quote}
+C.\ Elkan, ``The foundations of cost-sensitive learning,'' in \textit{Proceedings of the 17th International Joint Conference on Artificial Intelligence (IJCAI)}, pp.~973--978, 2001.
+ 
+\medskip
+C.\ X.\ Ling and V.\ S.\ Sheng, ``Cost-sensitive learning and the class imbalance problem,'' in \textit{Encyclopedia of Machine Learning}, Springer, 2008.
+\end{quote}
+ 
+
+\subsubsection{Adaptive Weight Imbalanced Least Squares Regression (AWILSR)}
+ 
+AWILSR addresses imbalanced classification within the framework of \textbf{Least Squares Regression (LSR)}. Standard LSR learns a transformation matrix $\mathbf{P}$ by solving:
+\[
+\min_{\mathbf{P}} \;\; \|\mathbf{X}^T \mathbf{P} - \mathbf{Y}\|_F^2 + \lambda\|\mathbf{P}\|_F^2,
+\]
+where $\mathbf{X}$ is the training data, $\mathbf{Y}$ is the binary label matrix, and $\lambda$ controls regularization. This formulation treats all samples equally and uses strict binary labels, both of which are problematic for imbalanced data.
+ 
+AWILSR improves upon this with two key mechanisms:
+ 
+\paragraph{(a) Weighted Imbalanced LSR (WILSR).}
+A diagonal weight matrix $\mathbf{W}$ is introduced to assign \emph{adaptive, sample-specific weights} based on the class distribution:
+\[
+\min_{\mathbf{P}} \;\; \|\mathbf{W}(\mathbf{X}^T \mathbf{P} - \mathbf{Y})\|_F^2 + \lambda\|\mathbf{P}\|_F^2.
+\]
+The weight of each sample is determined by the density information of its class: minority-class samples receive higher weights, reflecting their greater importance.
+ 
+
+\end{document}

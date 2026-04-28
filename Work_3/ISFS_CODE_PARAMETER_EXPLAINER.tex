@@ -1,0 +1,856 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+
+\title{Code-Level Explainer for the iSFS Logistic Training Run}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Purpose of This Document}
+This document explains the \emph{code-level} quantities that appear in the
+training run and in the generated results tables. The earlier iSFS explainer was
+mainly theoretical. This one answers a different question:
+\begin{quote}
+\emph{What do the variables and parameters in the code mean, where are they
+used, and how do they relate to the block-coordinate-descent training loop?}
+\end{quote}
+
+The active implementation uses the iSFS structure from Section 3 of
+\texttt{Multi\_source\_BWM.pdf}, replaces least squares with logistic/BCE loss,
+and adds the trust-region cost update from \texttt{notes.tex}.
+
+\section{Which Data Were Used in the Reported Run?}
+The run
+\begin{verbatim}
+./run_training.sh --max-iter 10 --block-a-max-iter 40
+\end{verbatim}
+used the real \emph{blockwise-missing} files, not the complete files. In
+\texttt{run\_training.py}, the real-data loader reads
+\begin{align*}
+X^{(1)} &: \texttt{data/source1\_clinical\_blockwise\_missing.csv}, \\
+X^{(2)} &: \texttt{data/source2\_imaging\_blockwise\_missing.csv}, \\
+X^{(3)} &: \texttt{data/source3\_proteomics\_blockwise\_missing.csv}, \\
+y &: \texttt{data/labels.csv}.
+\end{align*}
+
+So the reported training metrics came from the blockwise-missing three-source
+dataset with $500$ samples.
+
+\section{The Main Training Objects}
+For each source combination $m$, the model uses
+\begin{align}
+z_m = \sum_{i \in m} \alpha_m^i X_m^i \beta^i.
+\end{align}
+Here:
+\begin{itemize}
+\item $X_m^i$ is the source-$i$ feature block restricted to the samples in group
+$m$,
+\item $\beta^i$ is the source-level coefficient vector for source $i$,
+\item $\alpha_m^i$ is the profile-specific source weight for source $i$ inside
+group $m$.
+\end{itemize}
+
+For BCE from logits, the per-sample loss is
+\begin{align}
+\ell(z_{m,j}, y_{m,j}) = \log(1 + e^{z_{m,j}}) - y_{m,j} z_{m,j}.
+\end{align}
+
+With class costs $C$, the training group loss is
+\begin{align}
+f_m^C(\alpha,\beta,C)
+=
+\frac{1}{n_m}
+\sum_{j \in G_m}
+C_{y_{m,j}} \, \ell(z_{m,j}, y_{m,j}),
+\end{align}
+and the fixed-cost Block A objective is
+\begin{align}
+\Phi(\alpha,\beta;C)
+=
+\frac{1}{|pf|}
+\sum_{m \in pf}
+f_m^C(\alpha,\beta,C)
+ \;+\; \lambda_\beta R_\beta(\beta).
+\end{align}
+
+In the active path,
+\begin{align}
+R_\beta(\beta) = \sum_i \|\beta^i\|_1,
+\qquad
+R_\alpha(\alpha_m) = \|\alpha_m\|_1 \le r_\alpha.
+\end{align}
+
+\section{Three Nested Iteration Levels}
+The single most important source of confusion in the code is that there are
+\textbf{three nested iteration levels}. They are not the same.
+
+\subsection{Loop Schema}
+\[
+\boxed{
+\begin{array}{l}
+\textbf{Outer BCD loop } t = 1,\dots,T_{\mathrm{outer}} \\
+\quad \text{Current accepted state: } (C^{(t)}, \alpha^{(t)}, \beta^{(t)}) \\
+\quad \textbf{Block A solve with fixed } C^{(t)} \\
+\qquad \textbf{Alpha subproblem loop } u = 1,\dots,T_\alpha \\
+\qquad\qquad \beta \text{ fixed, update } \alpha \text{ by projected gradient} \\
+\qquad \textbf{Beta subproblem loop } v = 1,\dots,T_\beta \\
+\qquad\qquad \alpha \text{ fixed, update } \beta \text{ by proximal gradient} \\
+\qquad \text{Repeat alpha/beta alternation up to } T_A \text{ times} \\
+\quad \text{Compute class-loss vector } L(\alpha,\beta) \\
+\quad \text{Solve trust-region cost step } d_t \\
+\quad C_{\mathrm{trial}} = C^{(t)} + d_t \\
+\quad \text{Re-solve Block A at } C_{\mathrm{trial}} \\
+\quad \text{Compare current objective and trial objective} \\
+\quad \text{Accept or reject the trial cost step using } \rho_t
+\end{array}
+}
+\]
+
+\subsection{What the Iteration Parameters Mean}
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.20\textwidth} >{\raggedright\arraybackslash}p{0.18\textwidth} >{\raggedright\arraybackslash}p{0.54\textwidth}}
+\toprule
+\textbf{Parameter} & \textbf{Loop Level} & \textbf{Meaning} \\
+\midrule
+\endhead
+\texttt{max\_iter} & Outer BCD & Maximum number of outer cost-update rounds. One outer round means: fix $C$, solve Block A, propose a trial cost, re-solve Block A at the trial cost, then accept or reject the trial step. \\
+\texttt{block\_a\_max\_iter} & Block A & Maximum number of alpha/beta alternations while $C$ is fixed. This is the loop that repeatedly calls the alpha solver and beta solver until the fixed-cost Block A objective stabilizes. \\
+\texttt{alpha\_subproblem\_max\_iter} & Alpha subproblem & Maximum number of projected-gradient steps for solving one profile-specific alpha subproblem while beta is fixed. \\
+\texttt{beta\_subproblem\_max\_iter} & Beta subproblem & Maximum number of proximal-gradient steps for solving the beta subproblem while alpha is fixed. \\
+\texttt{tol} & Outer BCD & Outer stopping tolerance. It is used to terminate when the trust-region cost step is negligible or when the accepted outer improvement becomes tiny. \\
+\texttt{block\_a\_tol} & Block A & Tolerance for deciding that the fixed-cost Block A objective has stabilized. \\
+\texttt{alpha\_subproblem\_tol} & Alpha subproblem & Tolerance for deciding that the alpha iterate or the alpha objective has stabilized. \\
+\texttt{beta\_subproblem\_tol} & Beta subproblem & Tolerance for deciding that the beta iterate or the beta objective has stabilized. \\
+\bottomrule
+\end{longtable}
+
+\paragraph{Outer BCD vs. Block A.}
+The difference is:
+\begin{align*}
+\text{Outer BCD} &:\quad \text{updates the cost vector } C, \\
+\text{Block A} &:\quad \text{updates } (\alpha,\beta) \text{ while } C \text{ is fixed.}
+\end{align*}
+So \texttt{max\_iter} controls \emph{how many times the code tries to update
+$C$}, whereas \texttt{block\_a\_max\_iter} controls \emph{how many
+alpha/beta-alternation rounds are used to approximately solve the fixed-cost
+subproblem}.
+
+\section{Where the Learning Rates Enter}
+The paper gives the optimization structure, but the code still needs a
+numerical method to solve the alpha and beta subproblems. The current
+implementation uses first-order iterative solvers, so it introduces the
+step-size parameters
+\begin{align}
+\eta_\alpha = \texttt{learning\_rate\_alpha},
+\qquad
+\eta_\beta = \texttt{learning\_rate\_beta}.
+\end{align}
+
+These are \textbf{optimizer controls}, not new model parameters.
+
+\subsection{Alpha Step}
+For one profile $m$, the code computes a gradient
+\begin{align}
+\nabla_{\alpha_m} f_m^C(\alpha_m,\beta),
+\end{align}
+then takes a gradient step
+\begin{align}
+\alpha_m^{\mathrm{trial}}
+=
+\alpha_m - \eta_\alpha \nabla_{\alpha_m} f_m^C(\alpha_m,\beta),
+\end{align}
+and then projects back onto the $\ell_1$ ball:
+\begin{align}
+\alpha_m^{\mathrm{next}}
+=
+\Pi_{\|\cdot\|_1 \le r_\alpha}
+\left(
+\alpha_m^{\mathrm{trial}}
+\right).
+\end{align}
+
+\subsection{Beta Step}
+The beta step is analogous, except that the beta regularizer is treated through
+a proximal map:
+\begin{align}
+\beta^{i,\mathrm{trial}}
+&=
+\beta^i - \eta_\beta \nabla_{\beta^i} g(\beta), \\
+\beta^{i,\mathrm{next}}
+&=
+\mathrm{prox}_{\eta_\beta \lambda_\beta \|\cdot\|_1}
+\left(
+\beta^{i,\mathrm{trial}}
+\right).
+\end{align}
+
+\paragraph{Interpretation.}
+If the learning rate is too large, the iterative solver may overshoot. If it is
+too small, the solver may move too slowly. So these are numerical controls for
+the code implementation of the paper's subproblems.
+
+\section{Two Different Balls: Do Not Mix Them Up}
+There are \textbf{two different constraint geometries} in the code.
+
+\subsection{Alpha \texorpdfstring{$\ell_1$}{l1} Ball}
+The quantity
+\begin{align}
+r_\alpha = \texttt{alpha\_l1\_radius}
+\end{align}
+controls the constraint
+\begin{align}
+\|\alpha_m\|_1 \le r_\alpha
+\qquad \text{for every profile } m.
+\end{align}
+
+This is \textbf{not} the trust-region ball for the cost vector. It belongs to
+the alpha update only. In your run,
+\begin{align}
+r_\alpha = 1.0.
+\end{align}
+That is why the results table reported
+\begin{verbatim}
+Alpha Max L1: 1.000000
+\end{verbatim}
+many times: the projected alpha solution is living on the boundary of the alpha
+$\ell_1$ ball.
+
+\subsection{Cost Trust-Region Ball}
+The cost vector $C$ is updated inside a \emph{different} Euclidean trust region.
+That part uses:
+\begin{align}
+\Delta_t &= \text{working trust-region radius at iteration } t, \\
+\Delta_{\max} &= \texttt{max\_trust\_region\_radius}, \\
+C^0 &= \texttt{baseline\_cost\_vector}.
+\end{align}
+
+The local trust-region constraint is
+\begin{align}
+\frac{1}{2}\|d_t\|_2^2 \le \Delta_t,
+\end{align}
+while the global baseline-ball constraint is
+\begin{align}
+\frac{1}{2}\|C^{(t)} + d_t - C^0\|_2^2 \le \Delta_{\max}.
+\end{align}
+
+So:
+\begin{align*}
+\text{alpha ball} &:\ \ell_1 \text{ constraint on } \alpha_m, \\
+\text{cost trust region} &:\ \ell_2 \text{ ball for updates of } C.
+\end{align*}
+
+\section{The Cost Vectors: Initial, Baseline, and Final}
+The run report shows three cost-related objects.
+
+\subsection{Initial Cost Vector}
+The initial cost vector is the starting point
+\begin{align}
+C^{(0)} = \texttt{initial\_cost\_vector}.
+\end{align}
+In your run it was
+\begin{align}
+C^{(0)} = [0.5,\ 0.5].
+\end{align}
+The code uses this vector to solve the \emph{first} fixed-cost Block A problem.
+
+\subsection{Baseline Cost Vector}
+The baseline cost vector is
+\begin{align}
+C^0 = \texttt{baseline\_cost\_vector}.
+\end{align}
+This is the \emph{global reference center} of the large trust-region ball. It
+does not move from one outer iteration to the next unless the user chooses a
+different baseline at the start.
+
+If the user does not supply a separate baseline, the code sets
+\begin{align}
+C^0 = C^{(0)}.
+\end{align}
+That is exactly what happened in your run, so the initial cost vector and the
+baseline cost vector happened to be the same numerical vector:
+\begin{align}
+C^{(0)} = C^0 = [0.5,\ 0.5].
+\end{align}
+
+\paragraph{Important distinction.}
+Even when the two vectors start equal, they play different roles:
+\begin{align*}
+C^{(0)} &: \text{starting current cost}, \\
+C^0 &: \text{fixed baseline center for the global trust-region ball.}
+\end{align*}
+
+\paragraph{In your run.}
+The command
+\begin{verbatim}
+./run_training.sh --max-iter 10 --block-a-max-iter 40
+\end{verbatim}
+used
+\begin{align}
+\texttt{initial\_cost\_vector} &= [0.5,\ 0.5], \\
+\texttt{baseline\_cost\_vector} &= [0.5,\ 0.5].
+\end{align}
+So numerically, your run started with
+\begin{align}
+C^{(0)} = [0.5,\ 0.5]
+\qquad \text{and} \qquad
+C^0 = [0.5,\ 0.5].
+\end{align}
+They were equal in value, but they still played different roles:
+\begin{align*}
+C^{(0)} &: \text{the current cost at the start of training}, \\
+C^0 &: \text{the fixed center of the global trust-region ball.}
+\end{align*}
+
+\subsection{Final Learned Cost Vector}
+The final learned cost vector is the last accepted cost vector after the outer
+BCD loop ends:
+\begin{align}
+C^{\star} = \texttt{final learned cost vector}.
+\end{align}
+In your reported run,
+\begin{align}
+C^\star \approx [0.7650,\ 0.9240].
+\end{align}
+
+\section{How the Cost Update Is Evaluated}
+With $\alpha$ and $\beta$ fixed, the code computes the classwise loss vector
+\begin{align}
+L(\alpha,\beta)
+=
+\begin{bmatrix}
+L_0(\alpha,\beta) \\
+L_1(\alpha,\beta)
+\end{bmatrix},
+\end{align}
+where
+\begin{align}
+L_k(\alpha,\beta)
+=
+\frac{1}{|pf|}
+\sum_{m \in pf}
+\frac{1}{n_m}
+\sum_{j \in G_m : y_{m,j} = k}
+\ell(z_{m,j}, y_{m,j}).
+\end{align}
+
+\paragraph{Important sign convention.}
+Block A is a \emph{minimization} over $(\alpha,\beta)$ for fixed $C$. The cost
+block is then treated through the reduced objective
+\begin{align}
+F(C) = \min_{\alpha,\beta} \Phi(\alpha,\beta;C),
+\end{align}
+and the trust-region cost step tries to find a direction that
+\emph{increases} this reduced objective with respect to $C$. That is why the
+BCD summary reports \texttt{Predicted increase} and \texttt{Actual increase}
+rather than decreases.
+
+The trust-region subproblem then proposes a step $d_t$ and a trial cost
+\begin{align}
+C_{\mathrm{trial}} = C^{(t)} + d_t.
+\end{align}
+
+\subsection{Predicted Increase}
+Because the local model for the cost block is linear, the predicted increase is
+\begin{align}
+\mathrm{Pred}_t = L_t^\top d_t.
+\end{align}
+In the results table, this is the column called \texttt{Pred} or
+\texttt{Pred inc}.
+
+\subsection{Current Objective and Trial Objective}
+Define the reduced objective
+\begin{align}
+F(C) = \min_{\alpha,\beta} \Phi(\alpha,\beta;C).
+\end{align}
+
+Then:
+\begin{align*}
+\text{current objective} &= F(C^{(t)}), \\
+\text{trial objective} &= F(C_{\mathrm{trial}}).
+\end{align*}
+
+In code, both are computed approximately by solving Block A:
+\begin{itemize}
+\item the current objective is the latest accepted fixed-cost Block A value,
+\item the trial objective is the fixed-cost Block A value after re-solving at
+the trial cost.
+\end{itemize}
+
+\paragraph{What is the trust-region calculation in code?}
+The code does not jump directly from $C^{(t)}$ to a closed-form optimal
+$C^\star$. Instead it computes:
+\begin{enumerate}
+\item the class-loss vector $L_t = L(\alpha,\beta)$ with the current fixed
+$\alpha$ and $\beta$,
+\item the normalized direction
+\begin{align}
+\mathrm{direction}_t = \frac{L_t}{\|L_t\|_2},
+\end{align}
+\item a feasible step length $\tau_t$ limited by
+\begin{align*}
+\text{working trust-region limit}, \\
+\text{global baseline-ball limit}, \\
+\text{nonnegativity limit},
+\end{align*}
+\item the actual cost step
+\begin{align}
+d_t = \tau_t \frac{L_t}{\|L_t\|_2},
+\end{align}
+\item the trial cost
+\begin{align}
+C_{\mathrm{trial}} = C^{(t)} + d_t.
+\end{align}
+\end{enumerate}
+
+So the trust-region step is a \emph{bounded move in cost space}. The final
+learned cost is obtained only after repeating this outer BCD logic and
+accepting or rejecting the trial cost moves.
+
+\subsection{Actual Increase}
+The actual increase is
+\begin{align}
+\mathrm{Ared}_t
+=
+F(C_{\mathrm{trial}}) - F(C^{(t)}).
+\end{align}
+In the results table, this is the column called \texttt{Actual} or
+\texttt{Actual inc}.
+
+\subsection{Ratio and Acceptance}
+The trust-region ratio is
+\begin{align}
+\rho_t = \frac{\mathrm{Ared}_t}{\mathrm{Pred}_t}.
+\end{align}
+
+The code accepts the trial cost step when
+\begin{align}
+\rho_t \ge \eta_{\mathrm{acc}},
+\end{align}
+where
+\begin{align}
+\eta_{\mathrm{acc}} = \texttt{accept\_threshold}.
+\end{align}
+
+So:
+\begin{align*}
+\texttt{Accepted=True}
+&\Longrightarrow
+\text{move to } (C_{\mathrm{trial}}, \alpha_{\mathrm{trial}}, \beta_{\mathrm{trial}}), \\
+\texttt{Accepted=False}
+&\Longrightarrow
+\text{reject the trial step and keep the previous } (C,\alpha,\beta).
+\end{align*}
+
+The summary field \texttt{Accepted cost steps} is simply the count of outer BCD
+iterations for which \texttt{Accepted=True}.
+
+\subsection{Why the Run Stopped After Four BCD Entries}
+Although the run allowed up to $10$ outer iterations, it recorded only $4$
+outer entries because the loop terminated early when no meaningful new cost step
+was available. That is why the last line showed
+\begin{verbatim}
+Accepted: False | Termination: no_cost_step
+\end{verbatim}
+This means the training did \emph{not} use all ten outer iterations; it stopped
+earlier because the cost-update step had essentially vanished.
+
+\subsection{Run-Specific Cost Sequence}
+Your run produced the following accepted cost path:
+\begin{align}
+C^{(0)} &= [0.5000,\ 0.5000], \\
+C^{(1)} &= [0.6424,\ 0.6404], \\
+C^{(2)} &= [0.7422,\ 0.9051], \\
+C^{(3)} &= [0.7650,\ 0.9240].
+\end{align}
+
+Then the next outer iteration produced no meaningful cost step, so the training
+terminated and kept
+\begin{align}
+C^\star = C^{(3)} = [0.7650,\ 0.9240].
+\end{align}
+
+This is why the BCD summary showed:
+\begin{itemize}
+\item $4$ recorded outer BCD entries,
+\item $3$ accepted cost steps,
+\item $1$ final termination with \texttt{no\_cost\_step}.
+\end{itemize}
+
+\paragraph{How many optimization rounds were done?}
+For this run:
+\begin{itemize}
+\item the outer BCD loop recorded $4$ entries,
+\item the initial fixed-cost Block A solve used $40$ Block A iterations,
+\item each accepted trial cost step was followed by another fixed-cost Block A
+solve of $40$ iterations,
+\item the final outer iteration terminated before another trial Block A solve
+was needed.
+\end{itemize}
+
+\paragraph{Which trust-region parameters produced this path?}
+The run used:
+\begin{align}
+\Delta_1 &= \texttt{initial\_trust\_region\_radius} = 0.02, \\
+\Delta_{\max} &= \texttt{max\_trust\_region\_radius} = 0.125, \\
+\eta_{\mathrm{acc}} &= \texttt{accept\_threshold} = 0.25, \\
+\eta_{\mathrm{expand}} &= \texttt{expand\_threshold} = 0.75, \\
+\gamma_{\mathrm{shrink}} &= \texttt{shrink\_factor} = 0.25, \\
+\gamma_{\mathrm{expand}} &= \texttt{expand\_factor} = 2.0.
+\end{align}
+
+So the final learned cost vector was not assumed in advance. It emerged from:
+\begin{enumerate}
+\item the starting cost $C^{(0)}$,
+\item the fixed baseline center $C^0$,
+\item the class-loss vectors $L_t$ computed after solving for $\alpha$ and
+$\beta$,
+\item the trust-region step $d_t$,
+\item the accept/reject test based on the ratio $\rho_t$.
+\end{enumerate}
+
+\subsection{How to Read the BCD Summary Columns}
+Each BCD row corresponds to \emph{one proposed outer cost update}. The row is
+not reporting classification performance. It is reporting whether the
+trust-region cost step for that outer iteration was good enough to keep.
+
+Starting from the current accepted cost vector $C^{(t)}$, the code:
+\begin{enumerate}
+\item solves for the current $\alpha$ and $\beta$ at that cost,
+\item computes the class-loss vector $L_t$,
+\item proposes a bounded cost step $d_t$,
+\item forms the trial cost
+\begin{align}
+C_{\mathrm{trial}} = C^{(t)} + d_t,
+\end{align}
+\item re-solves Block A at $C_{\mathrm{trial}}$,
+\item compares what the local model predicted with what actually happened.
+\end{enumerate}
+
+The BCD summary fields mean:
+\begin{align}
+\text{current objective} &= F(C^{(t)}), \\
+\text{trial objective} &= F(C_{\mathrm{trial}}), \\
+\text{actual increase} &= F(C_{\mathrm{trial}}) - F(C^{(t)}), \\
+\text{predicted increase} &= L_t^\top d_t, \\
+\rho_t &= \frac{\text{actual increase}}{\text{predicted increase}}.
+\end{align}
+
+Here $F(C)$ is the reduced objective
+\begin{align}
+F(C) = \min_{\alpha,\beta} \Phi(\alpha,\beta;C),
+\end{align}
+so:
+\begin{itemize}
+\item \textbf{current objective} is the current fixed-cost Block A objective at
+the accepted cost $C^{(t)}$,
+\item \textbf{trial objective} is the fixed-cost Block A objective after
+switching to the trial cost and re-solving $\alpha$ and $\beta$,
+\item \textbf{predicted increase} is what the trust-region linear model expected
+the cost move to achieve before re-solving Block A,
+\item \textbf{actual increase} is what was actually achieved after re-solving
+Block A at the trial cost,
+\item \textbf{ratio} measures how accurate that prediction was.
+\end{itemize}
+
+\paragraph{How to interpret the ratio.}
+\begin{align*}
+\rho_t > 1 &:\ \text{the step worked better than predicted,} \\
+\rho_t \approx 1 &:\ \text{the prediction was very accurate,} \\
+0 < \rho_t < 1 &:\ \text{the step helped, but less than predicted,} \\
+\rho_t < \eta_{\mathrm{acc}} &:\ \text{reject the trial cost step.}
+\end{align*}
+
+The \textbf{radius} field is the working trust-region radius. When the summary
+prints
+\begin{verbatim}
+Radius: a -> b
+\end{verbatim}
+it means:
+\begin{itemize}
+\item $a$ was the radius used to construct the current trial step,
+\item $b$ is the radius that will be used in the next outer iteration.
+\end{itemize}
+
+\paragraph{Run-specific interpretation of your BCD rows.}
+\begin{itemize}
+\item \textbf{Iteration 1}:
+\begin{align*}
+\text{current objective} &= 0.301791, \\
+\text{trial objective} &= 0.433324, \\
+\text{actual increase} &= 0.433324 - 0.301791 = 0.131533, \\
+\text{predicted increase} &= 0.080115, \\
+\rho_1 &= 1.641803.
+\end{align*}
+This means the first cost step worked \emph{better} than the local model
+predicted. So the step was accepted, and the radius expanded from $0.02$ to
+$0.04$.
+
+\item \textbf{Iteration 2}:
+\begin{align*}
+\text{current objective} &= 0.433324, \\
+\text{trial objective} &= 0.474506, \\
+\text{actual increase} &= 0.041182, \\
+\text{predicted increase} &= 0.140319, \\
+\rho_2 &= 0.293487.
+\end{align*}
+This step still improved the reduced objective, but much less than predicted.
+It was still accepted because the ratio remained above the acceptance threshold
+$0.25$.
+
+\item \textbf{Iteration 3}:
+\begin{align*}
+\text{current objective} &= 0.474506, \\
+\text{trial objective} &= 0.485248, \\
+\text{actual increase} &= 0.010741, \\
+\text{predicted increase} &= 0.011537, \\
+\rho_3 &= 0.931015.
+\end{align*}
+This means the local model was very accurate. The step was accepted, and the
+radius expanded from $0.04$ to $0.08$.
+
+\item \textbf{Iteration 4}:
+\begin{align*}
+\text{current objective} &= 0.485248, \\
+\text{trial objective} &= 0.485248, \\
+\text{actual increase} &= 0, \\
+\text{predicted increase} &= 0.
+\end{align*}
+No meaningful new cost step was available, so the algorithm terminated with
+\texttt{no\_cost\_step}. The current accepted cost vector was kept unchanged.
+\end{itemize}
+
+\paragraph{Important note.}
+The objective in the BCD table is \emph{not} accuracy and it is \emph{not} just
+plain BCE. It is the reduced fixed-cost training objective after optimizing
+$\alpha$ and $\beta$, which includes the group cost-weighted BCE and the beta
+regularization term.
+
+\section{How the Radius Changes}
+The working trust-region radius changes according to the ratio:
+\begin{align}
+\Delta_{t+1}
+=
+\begin{cases}
+\gamma_{\mathrm{shrink}} \Delta_t, & \rho_t < \eta_{\mathrm{acc}}, \\
+\min(\gamma_{\mathrm{expand}}\Delta_t,\Delta_{\max}), & \rho_t \ge \eta_{\mathrm{expand}}, \\
+\Delta_t, & \text{otherwise.}
+\end{cases}
+\end{align}
+
+So the \texttt{Radius: a -> b} field in the report means:
+\begin{itemize}
+\item $a$ is the working radius used to build the current trial cost step,
+\item $b$ is the radius that will be used in the next outer BCD iteration.
+\end{itemize}
+
+\section{What Block A Reports Mean}
+The Block A report lines such as
+\begin{verbatim}
+Initial Block A iter 0001 | Obj: ... | Group Cost-BCE: ... | Beta L1: ...
+\end{verbatim}
+describe the fixed-cost alpha/beta optimization. They do \emph{not} update the
+cost vector.
+
+\subsection{Group Cost-BCE}
+\texttt{Group Cost-BCE} is the mean cost-weighted BCE across the overlapping
+optimization groups:
+\begin{align}
+\frac{1}{|pf|}
+\sum_{m \in pf}
+f_m^C(\alpha,\beta,C).
+\end{align}
+
+\subsection{Sample Cost-BCE}
+\texttt{Sample Cost-BCE} is the mean cost-weighted BCE computed on the full set
+of valid sample-level predictions after stitching together the exact-profile
+predictions.
+
+\subsection{Beta L1}
+\texttt{Beta L1} in the report is the weighted beta regularization term
+\begin{align}
+\lambda_\beta \sum_i \|\beta^i\|_1.
+\end{align}
+
+\subsection{Alpha Max L1}
+\texttt{Alpha Max L1} is the largest $\ell_1$ norm among all profile-specific
+alpha vectors:
+\begin{align}
+\max_m \|\alpha_m\|_1.
+\end{align}
+
+\section{What the Prediction Step Actually Does}
+Training uses overlapping optimization groups $G_m$, but prediction does not.
+
+\subsection{Training View}
+During training, a sample can contribute to multiple optimization groups because
+\begin{align}
+G_m = \{j : (p_j \mathbin{\&} m) = m \}.
+\end{align}
+So the optimization-group tables are a \emph{training view} of the data.
+
+\subsection{Prediction View}
+At prediction time, each sample belongs to exactly one exact observed-source
+profile:
+\begin{align}
+A_j = \{i : \text{source } i \text{ is present for sample } j\}.
+\end{align}
+The prediction for sample $j$ is then computed only from that exact profile:
+\begin{align}
+z_j
+=
+\sum_{i \in A_j}
+\alpha_{A_j}^i x_j^i \beta^i,
+\qquad
+\hat{p}_j = \sigma(z_j).
+\end{align}
+The class prediction is
+\begin{align}
+\hat{y}_j =
+\begin{cases}
+1, & \hat{p}_j \ge \tau, \\
+0, & \hat{p}_j < \tau,
+\end{cases}
+\end{align}
+where
+\begin{align}
+\tau = \texttt{decision\_threshold}.
+\end{align}
+In your run, $\tau = 0.5$.
+
+\paragraph{Meaning of the decision threshold.}
+The model first outputs a probability $\hat{p}_j$. The decision threshold is
+the cutoff that turns that probability into a hard class label. It does not
+change how the model is trained; it changes how probabilities are converted into
+\texttt{0}/\texttt{1} predictions for the metrics table.
+
+\section{How to Read the Alpha Table}
+The learned alpha table is indexed by source profiles such as
+\begin{align*}
+(\texttt{source1}),\ 
+(\texttt{source1},\texttt{source2}),\ 
+(\texttt{source1},\texttt{source2},\texttt{source3}).
+\end{align*}
+
+Each row means:
+\begin{quote}
+\emph{If a sample has exactly this source-availability pattern at prediction
+time, how should the model weight the participating sources?}
+\end{quote}
+
+For example, the row
+\begin{verbatim}
+('source1','source3'): {'source1': 0.075..., 'source3': 0.924...}
+\end{verbatim}
+means that, for the profile where sources $1$ and $3$ are present and source
+$2$ is absent, the predictor relies far more on source $3$ than source $1$.
+
+\section{How to Read the Beta Table}
+There is one beta vector per source:
+\begin{align*}
+\beta^{(1)} &\in \mathbb{R}^{10}, \\
+\beta^{(2)} &\in \mathbb{R}^{8}, \\
+\beta^{(3)} &\in \mathbb{R}^{25}.
+\end{align*}
+These lengths match the feature counts in the three source CSV files.
+
+The beta summary table reports:
+\begin{itemize}
+\item \textbf{shape}: the number of coefficients in that source,
+\item \textbf{$\ell_2$ norm}: overall coefficient magnitude,
+\item \textbf{$\ell_1$ norm}: total absolute magnitude, directly tied to the
+regularizer,
+\item \textbf{nonzero coefficients}: how many source features remain active
+after the proximal $\ell_1$ shrinkage.
+\end{itemize}
+
+\section{How to Read the Two Profile-Based Result Tables}
+The report prints two different profile tables because they answer two different
+questions.
+
+\subsection{Exact-Profile Training Metrics}
+These rows are \emph{disjoint}. Each sample belongs to exactly one exact profile
+such as
+\begin{align*}
+001,\ 010,\ 011,\ 100,\ 101,\ 110,\ 111.
+\end{align*}
+So this table is the closest to the prediction-time view of the model.
+
+\subsection{Optimization-Group Training Metrics}
+These rows are the overlapping training groups used by iSFS during fitting. A
+sample may appear in more than one of these groups. So this table is the
+closest to the training-time decomposition of the objective.
+
+\paragraph{Simple interpretation.}
+\begin{align*}
+\text{Exact-profile table} &:\ \text{``How does the final model perform on each exact missingness pattern?''} \\
+\text{Optimization-group table} &:\ \text{``How does the final model behave on each overlapping iSFS training group?''}
+\end{align*}
+
+\section{Metric Definitions That Appear in the Report}
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.22\textwidth} >{\raggedright\arraybackslash}p{0.68\textwidth}}
+\toprule
+\textbf{Metric} & \textbf{Meaning} \\
+\midrule
+\endhead
+Accuracy & Fraction of all predictions that are correct. \\
+Precision & Among predicted positives, the fraction that are truly positive. \\
+Recall / Sensitivity & Among true positives, the fraction correctly detected. \\
+Specificity & Among true negatives, the fraction correctly detected. \\
+F1 score & Harmonic mean of precision and recall. \\
+Balanced accuracy & Average of recall and specificity. \\
+MCC & Matthews correlation coefficient. This uses TP, TN, FP, and FN together and is often more informative than accuracy when the classes are not perfectly balanced. \\
+Brier score & Mean squared error of the predicted probabilities:
+$\frac{1}{n}\sum_j (\hat{p}_j - y_j)^2$. Lower is better. It measures probability calibration and probability accuracy. \\
+Log loss & Binary cross-entropy on the final predicted probabilities. Lower is better. \\
+Probability range & Minimum and maximum predicted probability over the evaluated set. This tells you how conservative or extreme the model's probability outputs were. \\
+\bottomrule
+\end{longtable}
+
+\section{Where These Objects Live in the Code}
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.28\textwidth} >{\raggedright\arraybackslash}p{0.62\textwidth}}
+\toprule
+\textbf{Object} & \textbf{Main implementation location} \\
+\midrule
+\endhead
+Real-data loading & \texttt{run\_training.py}, function \texttt{load\_real\_dataset} \\
+Outer BCD loop & \texttt{train\_model.py}, function \texttt{train\_blockwise\_logistic\_model} \\
+Fixed-cost Block A loop & \texttt{train\_model.py}, function \texttt{solve\_block\_a\_with\_fixed\_cost} \\
+Alpha subproblem solver & \texttt{alpha\_update.py}, function \texttt{solve\_alphas\_with\_fixed\_betas} \\
+Beta subproblem solver & \texttt{beta\_update.py}, function \texttt{solve\_betas\_with\_fixed\_alphas} \\
+Cost trust-region step & \texttt{costs.py}, function \texttt{solve\_cost\_trust\_region\_subproblem} \\
+Acceptance ratio and radius update & \texttt{costs.py}, functions \texttt{compute\_trust\_region\_ratio} and \texttt{update\_trust\_region\_radius} \\
+Exact profiles & \texttt{missingness\_profiles.py}, function \texttt{build\_exact\_profiles} \\
+Overlapping optimization groups & \texttt{missingness\_profiles.py}, function \texttt{build\_missingness\_profiles} \\
+Prediction logits and probabilities & \texttt{prediction.py}, functions \texttt{compute\_all\_logits}, \texttt{predict\_proba}, and \texttt{predict\_class} \\
+Metrics in the final report & \texttt{run\_training.py}, functions \texttt{compute\_binary\_metrics}, \texttt{compute\_training\_summary}, and \texttt{compute\_profile\_metrics} \\
+\bottomrule
+\end{longtable}
+
+\section{Final Summary}
+The key point is that the run report mixes together:
+\begin{enumerate}
+\item \textbf{model quantities} such as $\alpha$, $\beta$, $C$, and the
+profile groups,
+\item \textbf{solver controls} such as learning rates and maximum iteration
+counts,
+\item \textbf{trust-region diagnostics} such as predicted increase, actual
+increase, ratio, and radius,
+\item \textbf{evaluation outputs} such as accuracy, MCC, Brier score, and the
+exact-profile / optimization-group tables.
+\end{enumerate}
+
+Those are all part of the same training script, but they belong to different
+layers of the implementation. The outer iteration counts, Block A iteration
+counts, and alpha/beta subproblem iteration counts are \emph{solver controls}.
+The cost vectors, alpha weights, and beta coefficients are \emph{learned model
+objects}. The trust-region ratio and radius are \emph{cost-update diagnostics}.
+The metrics tables are \emph{evaluation summaries} of the final fitted model.
+
+\end{document}

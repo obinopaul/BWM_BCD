@@ -1,0 +1,1001 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,bm,mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+
+\newcommand{\pf}{\mathbf{pf}}
+\newcommand{\Xm}{\mathbf{X}_m}
+\newcommand{\ym}{\mathbf{y}_m}
+\newcommand{\zm}{\mathbf{z}_m}
+\newcommand{\alpham}{\boldsymbol{\alpha}_m}
+\newcommand{\betai}{\boldsymbol{\beta}^i}
+\newcommand{\betavec}{\boldsymbol{\beta}}
+\newcommand{\alphavec}{\boldsymbol{\alpha}}
+\newcommand{\costvec}{\mathbf{C}}
+\newcommand{\sigmoid}{\sigma}
+
+\title{Explainer for the Logistic iSFS Model with Trust-Region Cost Updates}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\section{Purpose of This Document}
+
+This document explains the theoretical path used by the current implementation
+of the incomplete-source feature-selection (iSFS) model in this repository.
+The goal is to connect three things clearly:
+
+\begin{enumerate}
+  \item the original iSFS equations in Section 3 of \texttt{Multi\_source\_BWM.pdf},
+  \item the logistic / binary-cross-entropy (BCE) version used in the code,
+  \item the Python modules that implement each part of the method.
+\end{enumerate}
+
+The active modeling path in the repository is:
+
+\begin{itemize}
+  \item missingness profiles and overlapping training groups,
+  \item logistic loss for binary classification,
+  \item profile-specific source weights $\alpham$,
+  \item shared source coefficients $\betai$,
+  \item class-cost vector $\costvec$ updated by a trust-region step.
+\end{itemize}
+
+Two scope notes are important:
+
+\begin{itemize}
+  \item The original paper derives the optimization mainly with least squares.
+  \item Remark 3 of the paper states that the iSFS model can be extended to
+  logistic loss, and that is the path used here.
+\end{itemize}
+
+The trust-region cost block comes from \texttt{notes.tex}, but the loss inside
+that cost block is adapted here from squared loss to BCE so that it matches the
+current classifier.
+
+\section{Where iSFS Starts in the Paper}
+
+Equation (13) in the paper still belongs to the complete-data model from
+Section 2. The incomplete-data iSFS model starts in Section 3, and the main
+paper equations for the blockwise-missing setting are:
+
+\begin{itemize}
+  \item Equation (14): the iSFS optimization problem,
+  \item Equation (15): the profile-level loss block,
+  \item Equation (16): the $\alpha$ subproblem,
+  \item Equation (17): the $\beta$ subproblem,
+  \item Equation (18): the least-squares gradient for the $\beta$ block.
+\end{itemize}
+
+So, for the current blockwise-missing setting, Equations (14)--(18) are the
+main source of truth.
+
+\section{Original iSFS Formulation in the Paper}
+
+The paper defines the incomplete-source feature-selection model as
+\begin{equation}
+\label{eq:paper14}
+\min_{\alphavec, \betavec}
+\frac{1}{|\pf|}
+\sum_{m \in \pf}
+f(\Xm, \betavec, \alpham, \ym)
+ + \lambda R_{\beta}(\betavec)
+\end{equation}
+subject to
+\begin{equation}
+\label{eq:paper14-constraint}
+R_{\alpha}(\alpham) \le 1,
+\qquad \forall m \in \pf.
+\end{equation}
+This reproduces Equation (14) of the paper.
+
+The paper then defines the profile-level loss block as
+\begin{equation}
+\label{eq:paper15}
+f(\mathbf{X}, \betavec, \alphavec, \mathbf{y})
+=
+\frac{1}{n}
+L\!\left(
+\sum_{i=1}^{S} \alpha^i \mathbf{X}^i \betai,
+\mathbf{y}
+\right),
+\end{equation}
+which is Equation (15).
+
+Here:
+\begin{itemize}
+  \item $S$ is the number of sources,
+  \item $\pf$ is the set of profile-based training groups,
+  \item $\Xm^i$ is the source-$i$ design matrix restricted to group $m$,
+  \item $\betai$ is the shared coefficient vector for source $i$,
+  \item $\alpha_m^i$ is the source weight for source $i$ inside group $m$,
+  \item $L(\cdot,\cdot)$ is any convex loss,
+  \item $R_{\alpha}$ and $R_{\beta}$ are regularization functions.
+\end{itemize}
+
+The profile-specific score is therefore
+\begin{equation}
+\label{eq:profile-score}
+\zm
+=
+\sum_{i=1}^{S} \alpha_m^i \Xm^i \betai.
+\end{equation}
+
+This is the central linear model used throughout the iSFS formulation.
+
+\section{From Least Squares to Logistic Loss}
+
+In Section 3.2, the paper says that it focuses on the least-squares loss for
+the derivation, but Remark 3 states that the same model can be extended to
+logistic loss. That is the path used by the repository.
+
+\subsection{Least-squares form in the paper}
+
+For the least-squares case, the profile-level data-fit term is effectively
+\begin{equation}
+\label{eq:least-squares-profile}
+\frac{1}{2n_m}
+\left\|
+\sum_{i=1}^{S} \alpha_m^i \Xm^i \betai
+- \ym
+\right\|_2^2.
+\end{equation}
+
+This is why the paper's $\beta$ block becomes quadratic.
+
+\subsection{Logistic / BCE form used in this repository}
+
+For binary classification, we instead use BCE written directly from logits:
+\begin{equation}
+\label{eq:bce-pointwise}
+\ell(z, y)
+=
+\log(1 + e^z) - yz,
+\qquad y \in \{0,1\}.
+\end{equation}
+
+For profile $m$, the logit vector is still
+\begin{equation}
+\label{eq:logit-vector-profile}
+\zm
+=
+\sum_{i=1}^{S} \alpha_m^i \Xm^i \betai.
+\end{equation}
+
+So the logistic profile loss is
+\begin{equation}
+\label{eq:logistic-profile-loss}
+f_m^{\mathrm{log}}(\alpham, \betavec)
+=
+\frac{1}{n_m}
+\sum_{j \in G_m}
+\ell(z_{m,j}, y_{m,j}).
+\end{equation}
+
+Two details matter here:
+\begin{enumerate}
+  \item the factor $\frac{1}{n_m}$ stays, because we still average over the
+  samples in group $m$,
+  \item the factor $\frac{1}{2}$ disappears, because it belonged to squared
+  loss, not to BCE.
+\end{enumerate}
+
+This is the loss used in \texttt{loss\_functions.py}.
+
+\section{Regularization Choice Used Here}
+
+The paper leaves $R_{\alpha}$ and $R_{\beta}$ generic in Equation
+\eqref{eq:paper14}, then states in Remark 4 and in the experiments section that
+different regularizers are possible and that the $\ell_1$ penalty is used in
+the experiments. The current repository follows that paper-aligned choice:
+\begin{equation}
+\label{eq:ralpha-choice}
+R_{\alpha}(\alpham) = \|\alpham\|_1
+\end{equation}
+and
+\begin{equation}
+\label{eq:rbeta-choice}
+R_{\beta}(\betavec)
+=
+\sum_{i=1}^{S} \|\betai\|_1.
+\end{equation}
+
+In code, this becomes:
+\begin{itemize}
+  \item an $\ell_1$-ball constraint for $\alpha$,
+  \item an $\ell_1$ penalty plus proximal step for $\beta$.
+\end{itemize}
+
+This is implemented in \texttt{regularization.py}.
+
+\section{Missingness Profiles and Block Construction}
+
+This is the first major step in the incomplete-data model.
+
+\subsection{Availability indicator for each participant}
+
+Suppose there are $S$ sources. For participant $j$, define the binary source
+availability vector
+\begin{equation}
+\label{eq:availability-vector}
+\mathbf{I}_j = [I_{j1}, I_{j2}, \dots, I_{jS}],
+\end{equation}
+where
+\begin{equation}
+\label{eq:availability-entry}
+I_{ji} =
+\begin{cases}
+1, & \text{if source } i \text{ is observed for participant } j, \\
+0, & \text{if source } i \text{ is missing for participant } j.
+\end{cases}
+\end{equation}
+
+The paper then converts this binary vector into a single integer profile:
+\begin{equation}
+\label{eq:profile-integer}
+p_j
+=
+\sum_{i=1}^{S} I_{ji} 2^{S-i}.
+\end{equation}
+
+For $S=3$:
+\begin{align*}
+[1,1,1] &\mapsto 7, \\
+[1,1,0] &\mapsto 6, \\
+[1,0,1] &\mapsto 5, \\
+[0,1,1] &\mapsto 3, \\
+[1,0,0] &\mapsto 4, \\
+[0,1,0] &\mapsto 2, \\
+[0,0,1] &\mapsto 1.
+\end{align*}
+
+In code, we usually display the same idea as a binary string such as
+\texttt{111}, \texttt{110}, \texttt{101}, and so on.
+
+\subsection{Exact participant profile}
+
+Each participant has exactly one exact observed-source profile:
+\begin{equation}
+\label{eq:exact-profile}
+A_j = \{ i : I_{ji} = 1 \}.
+\end{equation}
+
+This exact profile is what prediction uses later.
+
+\subsection{Overlapping optimization group $G_m$}
+
+The paper does not train directly on exact profiles only. Instead, for each
+source combination $m$, it builds an overlapping training group:
+\begin{equation}
+\label{eq:overlapping-group}
+G_m
+=
+\{ j : (p_j \,\&\, m) = m \},
+\end{equation}
+where $\&$ denotes the bitwise AND operation.
+
+This means:
+\begin{itemize}
+  \item sample $j$ belongs to $G_m$ if sample $j$ contains every source
+  required by combination $m$,
+  \item a sample has one exact profile, but it can belong to several training
+  groups.
+\end{itemize}
+
+For example, if a participant has exact profile \texttt{111}, then that
+participant belongs to all of the following training groups:
+\[
+\texttt{111}, \texttt{110}, \texttt{101}, \texttt{011}, \texttt{100},
+\texttt{010}, \texttt{001}.
+\]
+
+This is why the training groups overlap.
+
+\subsection{How the block matrices are formed}
+
+Once $G_m$ is known, the block matrices are formed by row restriction:
+\begin{equation}
+\label{eq:block-matrix}
+\Xm^i = \mathbf{X}^i[G_m, :],
+\qquad
+\ym = \mathbf{y}[G_m].
+\end{equation}
+
+So, for each combination $m$, we gather the rows whose available sources
+contain $m$, and then use those rows to define the subproblem for that block.
+
+\subsection{Small illustration table}
+
+Assume there are 3 sources, denoted $S_1, S_2, S_3$.
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.08\textwidth}
+                  >{\centering\arraybackslash}p{0.05\textwidth}
+                  >{\centering\arraybackslash}p{0.05\textwidth}
+                  >{\centering\arraybackslash}p{0.05\textwidth}
+                  >{\raggedright\arraybackslash}p{0.14\textwidth}
+                  >{\raggedright\arraybackslash}p{0.10\textwidth}
+                  >{\raggedright\arraybackslash}p{0.10\textwidth}
+                  >{\raggedright\arraybackslash}p{0.28\textwidth}}
+\toprule
+Sample & $S_1$ & $S_2$ & $S_3$ & Availability vector & Profile code & Exact profile & Training groups containing the sample \\
+\midrule
+\endhead
+1 & 1 & 1 & 1 & $[1,1,1]$ & \texttt{111} & \texttt{111} & \texttt{001,010,011,100,101,110,111} \\
+2 & 1 & 1 & 0 & $[1,1,0]$ & \texttt{110} & \texttt{110} & \texttt{100,010,110} \\
+3 & 1 & 0 & 1 & $[1,0,1]$ & \texttt{101} & \texttt{101} & \texttt{100,001,101} \\
+4 & 0 & 1 & 1 & $[0,1,1]$ & \texttt{011} & \texttt{011} & \texttt{010,001,011} \\
+5 & 1 & 0 & 0 & $[1,0,0]$ & \texttt{100} & \texttt{100} & \texttt{100} \\
+6 & 0 & 1 & 0 & $[0,1,0]$ & \texttt{010} & \texttt{010} & \texttt{010} \\
+7 & 0 & 0 & 1 & $[0,0,1]$ & \texttt{001} & \texttt{001} & \texttt{001} \\
+8 & 1 & 1 & 1 & $[1,1,1]$ & \texttt{111} & \texttt{111} & \texttt{001,010,011,100,101,110,111} \\
+\bottomrule
+\end{longtable}
+
+Now take $m = 110$. Then
+\begin{equation}
+\label{eq:g110-example}
+G_{110}
+=
+\{ j : (p_j \,\&\, 110) = 110 \}.
+\end{equation}
+
+In this small table, that includes samples whose exact profile is \texttt{110}
+or \texttt{111}. So the rows in $G_{110}$ are the rows used to build
+\[
+\mathbf{X}_{110}^{(1)},
+\qquad
+\mathbf{X}_{110}^{(2)},
+\qquad
+\mathbf{y}_{110}.
+\]
+
+This is implemented in \texttt{missingness\_profiles.py}.
+
+\section{Alpha Update When Beta and Cost Are Fixed}
+
+The paper's Equation (16) says that when $\betavec$ is fixed, each
+profile-specific weight vector $\alpham$ is obtained from
+\begin{equation}
+\label{eq:paper16}
+\min_{\alphavec}
+\left\|
+\sum_{i=1}^{S} \alpha^i \mathbf{X}^i \betai
+- \mathbf{y}
+\right\|_2^2
+\end{equation}
+subject to
+\begin{equation}
+\label{eq:paper16-constraint}
+R_{\alpha}(\alphavec) \le 1.
+\end{equation}
+
+\subsection{Logistic / cost-sensitive alpha objective used here}
+
+In the current repository, with BCE and class costs, the profile-$m$ alpha
+subproblem becomes
+\begin{equation}
+\label{eq:alpha-cost-objective}
+f_m^C(\alpham)
+=
+\frac{1}{n_m}
+\sum_{j \in G_m}
+C_{y_{m,j}}
+\ell(z_{m,j}, y_{m,j}),
+\end{equation}
+where
+\begin{equation}
+\label{eq:alpha-profile-logit}
+z_{m,j}
+=
+\sum_{i=1}^{S}
+\alpha_m^i
+\big(\mathbf{x}_{m,j}^i\big)^T
+\betai.
+\end{equation}
+
+\subsection{Gradient with respect to alpha}
+
+Define the source-specific score vector
+\begin{equation}
+\label{eq:source-score}
+\mathbf{s}_m^i = \Xm^i \betai.
+\end{equation}
+
+Then
+\begin{equation}
+\label{eq:z-as-source-scores}
+\zm
+=
+\sum_{i=1}^{S} \alpha_m^i \mathbf{s}_m^i.
+\end{equation}
+
+The gradient of the BCE block with respect to the logits is
+\begin{equation}
+\label{eq:gm-logits}
+\mathbf{g}_m
+=
+\frac{1}{n_m}
+\left[
+C_{\mathbf{y}_m}
+\odot
+\big(\sigmoid(\zm) - \ym\big)
+\right].
+\end{equation}
+
+Therefore, by the chain rule,
+\begin{equation}
+\label{eq:alpha-gradient}
+\frac{\partial f_m^C}{\partial \alpha_m^i}
+=
+\big(\mathbf{s}_m^i\big)^T \mathbf{g}_m
+=
+\big(\Xm^i \betai\big)^T \mathbf{g}_m.
+\end{equation}
+
+\subsection{Constrained update used in code}
+
+Because the active choice is
+\begin{equation}
+\label{eq:alpha-l1-choice}
+R_{\alpha}(\alpham) = \|\alpham\|_1,
+\end{equation}
+the code uses projected gradient:
+\begin{equation}
+\label{eq:alpha-temp}
+\alpham^{\mathrm{temp}}
+=
+\alpham
+- \eta_{\alpha} \nabla f_m^C(\alpham),
+\end{equation}
+\begin{equation}
+\label{eq:alpha-projection}
+\alpham^{\mathrm{next}}
+=
+\Pi_{\|\cdot\|_1 \le r_{\alpha}}
+\big(
+\alpham^{\mathrm{temp}}
+\big).
+\end{equation}
+
+This is implemented in \texttt{alpha\_update.py}.
+
+\section{Beta Update When Alpha and Cost Are Fixed}
+
+The paper's Equation (17) says that when $\alphavec$ is fixed, the $\beta$
+block is
+\begin{equation}
+\label{eq:paper17}
+\min_{\betavec}
+g(\betavec) + \lambda R_{\beta}(\betavec).
+\end{equation}
+
+For least squares, the paper writes
+\begin{equation}
+\label{eq:paper17-g}
+g(\betavec)
+=
+\frac{1}{|\pf|}
+\sum_{m \in \pf}
+\frac{1}{2n_m}
+\left\|
+\sum_{i=1}^{S}
+(\alpha_m^i \Xm^i)\betai
+- \ym
+\right\|_2^2.
+\end{equation}
+
+It then gives the least-squares gradient in Equation (18):
+\begin{equation}
+\label{eq:paper18}
+\nabla g(\betai)
+=
+\frac{1}{|\pf|}
+\sum_{m \in \pf}
+\frac{1}{n_m}
+I(m \,\&\, 2^{S-i} \ne 0)
+(\alpha_m^i \Xm^i)^T
+\left(
+\sum_{r=1}^{S}
+\alpha_m^r \Xm^r \boldsymbol{\beta}^r
+- \ym
+\right).
+\end{equation}
+
+\subsection{Logistic / cost-sensitive beta objective used here}
+
+In the current repository, this becomes
+\begin{equation}
+\label{eq:beta-logistic-objective}
+g_C^{\mathrm{log}}(\betavec)
+=
+\frac{1}{|\pf|}
+\sum_{m \in \pf}
+\frac{1}{n_m}
+\sum_{j \in G_m}
+C_{y_{m,j}}
+\ell(z_{m,j}, y_{m,j}).
+\end{equation}
+
+\subsection{Logistic gradient with respect to beta}
+
+The same logits gradient is
+\begin{equation}
+\label{eq:beta-gm}
+\mathbf{g}_m
+=
+\frac{1}{n_m}
+\left[
+C_{\mathbf{y}_m}
+\odot
+\big(\sigmoid(\zm) - \ym\big)
+\right].
+\end{equation}
+
+Then the gradient with respect to source-$i$ coefficients is
+\begin{equation}
+\label{eq:beta-gradient-logistic}
+\nabla_{\betai} g_C^{\mathrm{log}}(\betavec)
+=
+\frac{1}{|\pf|}
+\sum_{m : i \in m}
+(\alpha_m^i \Xm^i)^T \mathbf{g}_m.
+\end{equation}
+
+This is the logistic analogue of Equation \eqref{eq:paper18}.
+
+\subsection{Proximal update used in code}
+
+Because
+\begin{equation}
+\label{eq:beta-l1-choice}
+R_{\beta}(\betavec)
+=
+\sum_{i=1}^{S} \|\betai\|_1,
+\end{equation}
+the code uses a proximal-gradient step:
+\begin{equation}
+\label{eq:beta-v}
+\mathbf{v}_i
+=
+\betai
+- \eta_{\beta}
+\nabla_{\betai} g_C^{\mathrm{log}}(\betavec),
+\end{equation}
+\begin{equation}
+\label{eq:beta-prox}
+\betai^{\mathrm{next}}
+=
+\operatorname{prox}_{\eta_{\beta}\lambda \|\cdot\|_1}(\mathbf{v}_i)
+=
+\operatorname{sign}(\mathbf{v}_i)
+\odot
+\max(|\mathbf{v}_i| - \eta_{\beta}\lambda, 0).
+\end{equation}
+
+This is implemented in \texttt{beta\_update.py}.
+
+\section{Cost Vector and Trust-Region Update}
+
+This is the main extension beyond the original paper path.
+
+\subsection{Cost-sensitive BCE block}
+
+For group $m$, the current repository uses
+\begin{equation}
+\label{eq:cost-sensitive-group-loss}
+f_m^C(\Xm, \betavec, \alpham, \ym)
+=
+\frac{1}{n_m}
+\sum_{j \in G_m}
+C_{y_{m,j}}
+\ell(z_{m,j}, y_{m,j}).
+\end{equation}
+
+So the full fixed-cost Block A objective is
+\begin{equation}
+\label{eq:block-a-objective}
+\Phi(\alphavec, \betavec; \costvec)
+=
+\frac{1}{|\pf|}
+\sum_{m \in \pf}
+f_m^C(\Xm, \betavec, \alpham, \ym)
++
+\lambda_{\beta}
+\sum_{i=1}^{S} \|\betai\|_1
+\end{equation}
+subject to
+\begin{equation}
+\label{eq:block-a-constraint}
+\|\alpham\|_1 \le r_{\alpha}.
+\end{equation}
+
+\subsection{Per-class loss vector}
+
+With $\alphavec$ and $\betavec$ fixed, define
+\begin{equation}
+\label{eq:classwise-loss}
+L_k(\alphavec, \betavec)
+=
+\frac{1}{|\pf|}
+\sum_{m \in \pf}
+\frac{1}{n_m}
+\sum_{j \in G_m : y_{m,j}=k}
+\ell(z_{m,j}, y_{m,j}),
+\end{equation}
+for each class $k$.
+
+Then define the class-loss vector
+\begin{equation}
+\label{eq:class-loss-vector}
+L(\alphavec, \betavec)
+=
+\big(
+L_1(\alphavec, \betavec),
+\dots,
+L_K(\alphavec, \betavec)
+\big)^T.
+\end{equation}
+
+The cost-only objective is then
+\begin{equation}
+\label{eq:phi-c}
+\Phi_C(\costvec)
+=
+L(\alphavec, \betavec)^T \costvec.
+\end{equation}
+
+\subsection{Trust-region subproblem for the cost vector}
+
+Let the current cost vector at outer iteration $t$ be $\costvec^{(t)}$, and let
+$\costvec^0$ be the baseline cost vector. The trust-region step is written in
+terms of $d_t$ where
+\begin{equation}
+\label{eq:trial-cost}
+\costvec^{\mathrm{trial}} = \costvec^{(t)} + d_t.
+\end{equation}
+
+The trust-region problem solved for the $\costvec$ block is
+\begin{equation}
+\label{eq:trust-region-subproblem}
+\max_{d}
+\;
+L_t^T d
+\end{equation}
+subject to
+\begin{equation}
+\label{eq:trust-region-constraints}
+\frac{1}{2}\|d\|_2^2 \le \Delta_t,
+\qquad
+\costvec^{(t)} + d \ge 0,
+\qquad
+\frac{1}{2}\|\costvec^{(t)} + d - \costvec^0\|_2^2 \le \Delta_{\max}.
+\end{equation}
+
+This means:
+\begin{itemize}
+  \item the step must stay inside the current working trust region,
+  \item the updated cost vector must stay nonnegative,
+  \item the updated cost vector must remain inside the larger baseline-centered
+  ball.
+\end{itemize}
+
+\subsection{Predicted increase, actual increase, and acceptance ratio}
+
+Define the reduced objective
+\begin{equation}
+\label{eq:reduced-objective}
+F(\costvec)
+=
+\min_{\alphavec, \betavec}
+\Phi(\alphavec, \betavec; \costvec).
+\end{equation}
+
+Then the trust-region model predicts
+\begin{equation}
+\label{eq:predicted-increase}
+\mathrm{Pred}_t = L_t^T d_t,
+\end{equation}
+while the actual change is
+\begin{equation}
+\label{eq:actual-increase}
+\mathrm{Ared}_t
+=
+F(\costvec^{(t)} + d_t) - F(\costvec^{(t)}).
+\end{equation}
+
+The trust-region ratio is
+\begin{equation}
+\label{eq:trust-region-ratio}
+\rho_t
+=
+\frac{\mathrm{Ared}_t}{\mathrm{Pred}_t}.
+\end{equation}
+
+If $\rho_t$ is large enough, the trial step is accepted. If not, the step is
+rejected and the model keeps the previous $\costvec$, $\alphavec$, and
+$\betavec$.
+
+This is implemented in \texttt{costs.py} and orchestrated in
+\texttt{train\_model.py}.
+
+\section{Prediction Rule}
+
+Training and prediction do not use the same grouping rule.
+
+\subsection{During training}
+
+Training uses the overlapping optimization groups $G_m$.
+
+\subsection{During prediction}
+
+Prediction uses the exact observed-source pattern of the new sample.
+
+For a new sample $j$, define its exact observed-source set
+\begin{equation}
+\label{eq:prediction-exact-set}
+A_j = \{ i : \text{source } i \text{ is observed for sample } j \}.
+\end{equation}
+
+Then prediction uses the exact-profile-specific alpha weights:
+\begin{equation}
+\label{eq:prediction-score}
+z_j
+=
+\sum_{i \in A_j}
+\alpha_{A_j}^i
+\big(\mathbf{x}_j^i\big)^T
+\betai.
+\end{equation}
+
+The probability of class 1 is
+\begin{equation}
+\label{eq:prediction-probability}
+\Pr(y_j = 1 \mid x_j)
+=
+\sigmoid(z_j)
+=
+\frac{1}{1 + e^{-z_j}}.
+\end{equation}
+
+The predicted class is
+\begin{equation}
+\label{eq:prediction-threshold}
+\hat{y}_j
+=
+\mathbf{1}\{\sigmoid(z_j) \ge \tau\},
+\end{equation}
+where $\tau = 0.5$ by default.
+
+The learned cost vector $\costvec$ does not appear directly in the prediction
+formula. Instead, $\costvec$ affects prediction indirectly by changing the
+learned $\alphavec$ and $\betavec$ during training.
+
+This is implemented in \texttt{prediction.py}.
+
+\section{Full Training Loop Used in This Repository}
+
+The current training loop is:
+
+\subsection*{Step 0. Build profiles and training blocks}
+
+From the source availability pattern:
+\begin{enumerate}
+  \item compute the exact profile of each sample,
+  \item build the overlapping optimization groups $G_m$,
+  \item build the block matrices $\Xm^i$ and labels $\ym$.
+\end{enumerate}
+
+\subsection*{Step 1. Initialize parameters}
+
+The paper's Algorithm 2 says that each $\betai$ should be initialized by
+fitting each source individually on the available data. The current code uses a
+practical initialization:
+\begin{itemize}
+  \item initialize each $\betai$ with small random values,
+  \item initialize each $\alpham$ with equal weight across the sources present
+  in profile $m$,
+  \item initialize the cost vector with
+  \begin{equation}
+  \label{eq:initial-cost}
+  \costvec^{(0)} = [0.5, 0.5]^T
+  \end{equation}
+  and set the baseline cost vector to
+  \begin{equation}
+  \label{eq:baseline-cost}
+  \costvec^0 = [0.5, 0.5]^T.
+  \end{equation}
+\end{itemize}
+
+\subsection*{Step 2. Solve Block A with cost fixed}
+
+With $\costvec^{(t)}$ fixed:
+\begin{enumerate}
+  \item solve the $\alpha$ subproblem with $\betavec$ fixed,
+  \item solve the $\beta$ subproblem with $\alphavec$ fixed,
+  \item repeat until the fixed-cost Block A objective stabilizes.
+\end{enumerate}
+
+Symbolically,
+\begin{equation}
+\label{eq:block-a-solve}
+(\alphavec^{(t+1)}, \betavec^{(t+1)})
+\approx
+\arg\min_{\alphavec, \betavec}
+\Phi(\alphavec, \betavec; \costvec^{(t)}).
+\end{equation}
+
+\subsection*{Step 3. Compute the class-loss vector}
+
+With the updated $\alphavec^{(t+1)}$ and $\betavec^{(t+1)}$, compute
+\begin{equation}
+\label{eq:class-loss-step}
+L^{(t+1)}
+=
+L(\alphavec^{(t+1)}, \betavec^{(t+1)}).
+\end{equation}
+
+\subsection*{Step 4. Solve the trust-region cost step}
+
+Using $L^{(t+1)}$, solve for a trial cost step:
+\begin{equation}
+\label{eq:cost-step}
+d_t
+\approx
+\arg\max_d L^{(t+1)T} d
+\end{equation}
+subject to the trust-region and nonnegativity constraints. This produces
+\begin{equation}
+\label{eq:trial-cost-step}
+\costvec^{\mathrm{trial}} = \costvec^{(t)} + d_t.
+\end{equation}
+
+\subsection*{Step 5. Re-solve Block A at the trial cost}
+
+Now fix $\costvec^{\mathrm{trial}}$ and solve again for the corresponding
+$\alpha,\beta$ block:
+\begin{equation}
+\label{eq:block-a-trial}
+(\alphavec^{\mathrm{trial}}, \betavec^{\mathrm{trial}})
+\approx
+\arg\min_{\alphavec, \betavec}
+\Phi(\alphavec, \betavec; \costvec^{\mathrm{trial}}).
+\end{equation}
+
+\subsection*{Step 6. Accept or reject the cost step}
+
+Compute
+\begin{equation}
+\label{eq:acceptance-terms}
+\mathrm{Pred}_t = L_t^T d_t,
+\qquad
+\mathrm{Ared}_t = F(\costvec^{\mathrm{trial}}) - F(\costvec^{(t)}),
+\qquad
+\rho_t = \frac{\mathrm{Ared}_t}{\mathrm{Pred}_t}.
+\end{equation}
+
+Then:
+\begin{itemize}
+  \item if $\rho_t$ is large enough, accept the step and keep
+  $(\costvec^{\mathrm{trial}}, \alphavec^{\mathrm{trial}}, \betavec^{\mathrm{trial}})$,
+  \item otherwise reject the step and keep the previous
+  $(\costvec^{(t)}, \alphavec^{(t+1)}, \betavec^{(t+1)})$.
+\end{itemize}
+
+\subsection*{Step 7. Update the trust-region radius}
+
+Depending on $\rho_t$:
+\begin{itemize}
+  \item shrink the radius if the step was poor,
+  \item keep the radius if the step was reasonable,
+  \item enlarge the radius if the step was very reliable.
+\end{itemize}
+
+\subsection*{Step 8. Repeat until convergence}
+
+Repeat Steps 2--7 until:
+\begin{itemize}
+  \item the outer BCD iteration limit is reached, or
+  \item the cost step becomes too small, or
+  \item the reduced objective stabilizes.
+\end{itemize}
+
+This full loop is implemented in \texttt{train\_model.py} and exposed by
+\texttt{run\_training.py} and \texttt{run\_training.sh}.
+
+\section{What Is Actually Minimized and What Is Maximized}
+
+One subtle but important point is that the current training loop is not a pure
+``minimize everything'' procedure.
+
+For fixed cost $\costvec$, Block A solves
+\begin{equation}
+\label{eq:min-block-a}
+\min_{\alphavec, \betavec}
+\Phi(\alphavec, \betavec; \costvec).
+\end{equation}
+
+But for fixed $\alphavec$ and $\betavec$, the cost block solves
+\begin{equation}
+\label{eq:max-cost}
+\max_{\costvec} \Phi_C(\costvec).
+\end{equation}
+
+So the outer scheme is a blockwise alternating procedure with:
+\begin{itemize}
+  \item minimization over $(\alphavec, \betavec)$,
+  \item maximization over $\costvec$ inside the trust-region constraints.
+\end{itemize}
+
+This is why, during training output:
+\begin{itemize}
+  \item \texttt{Accepted=True} means the proposed trust-region move in
+  $\costvec$ was kept,
+  \item \texttt{Accepted=False} means the proposed move in $\costvec$ was
+  rejected.
+\end{itemize}
+
+\section{Code Map}
+
+The current code modules line up with the mathematics as follows.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Theoretical part & Code file \\
+\midrule
+Stable logistic / BCE loss & \texttt{loss\_functions.py} \\
+Profile construction and overlapping groups & \texttt{missingness\_profiles.py} \\
+$\alpha$ subproblem & \texttt{alpha\_update.py} \\
+$\beta$ subproblem & \texttt{beta\_update.py} \\
+$\ell_1$ regularization operators & \texttt{regularization.py} \\
+Cost-sensitive BCE and trust-region cost step & \texttt{costs.py} \\
+Exact-profile prediction & \texttt{prediction.py} \\
+Full outer BCD training loop & \texttt{train\_model.py} \\
+User-facing runner and saved reports & \texttt{run\_training.py} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Short Summary}
+
+The iSFS model in the paper is built around:
+\begin{itemize}
+  \item one shared coefficient vector $\betai$ per source,
+  \item one profile-specific weight vector $\alpham$ per source combination,
+  \item a profile-based decomposition of blockwise-missing data.
+\end{itemize}
+
+This repository keeps that structure, but replaces the least-squares data-fit
+term with BCE from logits for binary classification, and adds a trust-region
+update for the class-cost vector $\costvec$.
+
+So the full current pipeline is:
+\begin{enumerate}
+  \item compute exact profiles and overlapping training groups,
+  \item train the logistic iSFS model by alternating $\alpha$ and $\beta$,
+  \item update the class-cost vector $\costvec$ by trust region,
+  \item predict with the exact-profile logistic model.
+\end{enumerate}
+
+That is the theoretical path implemented by the current codebase.
+
+\end{document}
