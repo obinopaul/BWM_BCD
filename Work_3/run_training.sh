@@ -8,8 +8,14 @@
 # The default dataset is the real blockwise-missing CSV collection in `data/`.
 # Override any Python CLI option by passing it here, for example:
 #   ./run_training.sh --dataset synthetic
-#   ./run_training.sh --dataset real --max-iter 10 --block-a-max-iter 40
+#   ./run_training.sh --max-iter 20 --block-a-max-iter 40
 
 set -euo pipefail
 
-python3 run_training.py --dataset real "$@"
+python3 run_training.py \
+  --dataset real \
+  --max-iter 12 \
+  --block-a-max-iter 25 \
+  --alpha-subproblem-max-iter 25 \
+  --beta-subproblem-max-iter 25 \
+  "$@"

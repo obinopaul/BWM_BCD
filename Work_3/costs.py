@@ -332,6 +332,9 @@ def solve_cost_trust_region_subproblem(
     if working_radius < 0.0 or max_radius < 0.0:
         raise ValueError("Trust-region radii must be nonnegative.")
 
+    baseline_radius = np.sqrt(2.0 * max_radius)
+    baseline_distance = float(np.linalg.norm(current_cost - baseline_cost))
+
     loss_norm = float(np.linalg.norm(class_loss_vector))
     if loss_norm == 0.0:
         zero_step = np.zeros_like(current_cost)
@@ -343,6 +346,10 @@ def solve_cost_trust_region_subproblem(
             "working_step_limit": 0.0,
             "global_step_limit": 0.0,
             "nonnegativity_step_limit": np.inf,
+            "active_constraint": "zero_class_loss",
+            "baseline_distance": baseline_distance,
+            "baseline_radius": float(baseline_radius),
+            "baseline_margin": float(max(baseline_radius - baseline_distance, 0.0)),
         }
 
     direction = class_loss_vector / loss_norm
@@ -364,6 +371,12 @@ def solve_cost_trust_region_subproblem(
         nonnegativity_step_limit,
     )
     step_length = max(step_length, 0.0)
+    if step_length == working_step_limit:
+        active_constraint = "working_trust_region"
+    elif step_length == global_step_limit:
+        active_constraint = "global_baseline_ball"
+    else:
+        active_constraint = "nonnegativity"
 
     step = step_length * direction
     trial_cost = current_cost + step
@@ -381,6 +394,10 @@ def solve_cost_trust_region_subproblem(
         "working_step_limit": float(working_step_limit),
         "global_step_limit": float(global_step_limit),
         "nonnegativity_step_limit": float(nonnegativity_step_limit),
+        "active_constraint": active_constraint,
+        "baseline_distance": baseline_distance,
+        "baseline_radius": float(baseline_radius),
+        "baseline_margin": float(max(baseline_radius - baseline_distance, 0.0)),
     }
 
 

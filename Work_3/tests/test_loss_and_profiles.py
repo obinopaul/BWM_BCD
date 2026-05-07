@@ -56,6 +56,12 @@ from regularization import (
     max_alpha_l1_norm,
     project_onto_l1_ball,
 )
+from run_training import (
+    compute_binary_metrics,
+    fit_transform_train_test,
+    split_dataset,
+)
+from generate_results_report import make_markdown
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -349,6 +355,157 @@ class RegularizationTests(unittest.TestCase):
         }
         penalty = beta_l1_penalty(betas, lambda_beta=0.1)
         self.assertAlmostEqual(penalty, 0.35)
+
+
+class RunnerMetricAndSplitTests(unittest.TestCase):
+    def test_gmean_is_geometric_mean_of_recall_and_specificity(self):
+        y_true = np.array([1, 1, 1, 0, 0, 0])
+        y_pred = np.array([1, 1, 0, 0, 0, 1])
+        y_prob = np.array([0.9, 0.8, 0.2, 0.1, 0.3, 0.7])
+
+        metrics = compute_binary_metrics(y_true, y_pred, y_prob)
+
+        expected_recall = 2.0 / 3.0
+        expected_specificity = 2.0 / 3.0
+        self.assertAlmostEqual(metrics["recall"], expected_recall)
+        self.assertAlmostEqual(metrics["specificity"], expected_specificity)
+        self.assertAlmostEqual(
+            metrics["gmean"],
+            np.sqrt(expected_recall * expected_specificity),
+        )
+
+    def test_split_preserves_label_profile_strata_without_overlap(self):
+        X_blocks = load_blockwise_sources()
+        labels = np.genfromtxt(
+            DATA_DIR / "labels.csv",
+            delimiter=",",
+            skip_header=1,
+        )[:, 1].astype(int)
+
+        split = split_dataset(
+            X_blocks=X_blocks,
+            y=labels,
+            test_size=0.30,
+            random_state=42,
+        )
+
+        train_indices = set(split["train_indices"].tolist())
+        test_indices = set(split["test_indices"].tolist())
+
+        self.assertEqual(len(train_indices & test_indices), 0)
+        self.assertEqual(len(train_indices) + len(test_indices), len(labels))
+        self.assertGreater(len(test_indices), 0)
+
+        strata = split["stratification_labels"]
+        for stratum in sorted(set(strata.tolist())):
+            total = int(np.sum(strata == stratum))
+            train_count = int(np.sum(strata[split["train_indices"]] == stratum))
+            test_count = int(np.sum(strata[split["test_indices"]] == stratum))
+            self.assertEqual(train_count + test_count, total)
+            if total > 1:
+                self.assertGreater(train_count, 0)
+                self.assertGreater(test_count, 0)
+
+    def test_train_only_standardization_preserves_all_missing_rows(self):
+        train_blocks = {
+            "source1": np.array([
+                [1.0, 2.0],
+                [np.nan, np.nan],
+                [3.0, np.nan],
+            ]),
+            "source2": np.array([
+                [10.0],
+                [12.0],
+                [14.0],
+            ]),
+        }
+        test_blocks = {
+            "source1": np.array([
+                [np.nan, np.nan],
+                [5.0, 6.0],
+            ]),
+            "source2": np.array([
+                [16.0],
+                [18.0],
+            ]),
+        }
+
+        train_scaled, test_scaled, preprocessor = fit_transform_train_test(
+            train_blocks,
+            test_blocks,
+        )
+
+        self.assertTrue(np.all(np.isnan(train_scaled["source1"][1])))
+        self.assertTrue(np.all(np.isnan(test_scaled["source1"][0])))
+        self.assertTrue(np.all(np.isfinite(train_scaled["source1"][[0, 2]])))
+        self.assertTrue(np.all(np.isfinite(test_scaled["source1"][1])))
+        self.assertIn("mean", preprocessor["source1"])
+        self.assertIn("std", preprocessor["source1"])
+
+    def test_markdown_report_includes_gmean(self):
+        summary = compute_binary_metrics(
+            y_true=np.array([1, 1, 0, 0]),
+            y_pred=np.array([1, 0, 0, 1]),
+            y_prob=np.array([0.8, 0.4, 0.2, 0.7]),
+        )
+        summary.update(
+            {
+                "threshold": 0.5,
+                "n_total_samples": 4,
+                "n_valid_predictions": 4,
+                "n_invalid_predictions": 0,
+            }
+        )
+        profile_rows = [
+            {
+                **summary,
+                "profile_code": "11",
+                "n_samples": 4,
+                "bce": 0.5,
+                "cost_bce": 0.25,
+            }
+        ]
+        final_parameters = {
+            "costs": [0.5, 0.5],
+            "baseline_costs": [0.5, 0.5],
+            "source_order": ["source1"],
+            "alphas": {"source1": {"source1": 1.0}},
+            "betas": {"source1": [0.1, 0.0]},
+        }
+        config = {
+            "dataset": "synthetic",
+            "max_iter": 1,
+            "block_a_max_iter": 1,
+            "alpha_subproblem_max_iter": 1,
+            "beta_subproblem_max_iter": 1,
+            "learning_rate_alpha": 0.01,
+            "learning_rate_beta": 0.01,
+            "lambda_beta": 0.01,
+            "alpha_l1_radius": 1.0,
+            "decision_threshold": 0.5,
+            "test_size": 0.3,
+            "split_random_state": 42,
+            "no_standardize": False,
+            "initial_cost_vector": "0.5,0.5",
+            "baseline_cost_vector": "0.5,0.5",
+        }
+
+        markdown = make_markdown(
+            run_dir=DATA_DIR,
+            config=config,
+            train_summary=summary,
+            test_summary=summary,
+            split_summary={"strategy": "test", "train_size": 2, "test_size": 2},
+            bcd_rows=[],
+            train_exact_rows=profile_rows,
+            test_exact_rows=profile_rows,
+            train_opt_rows=profile_rows,
+            test_opt_rows=profile_rows,
+            final_parameters=final_parameters,
+        )
+
+        self.assertIn("GMEAN", markdown)
+        self.assertIn("| GMEAN |", markdown)
 
 
 class AlphaBetaAuditTests(unittest.TestCase):

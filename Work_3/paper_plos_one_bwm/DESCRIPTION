@@ -1,0 +1,14 @@
+Package: bwm
+Type: Package
+Title: Regression and classification models for block-wise missing data
+Version: 2.0.0
+Author: Sergi Baena-Miret [aut, cre], Ferran Reverter [ctb], Esteban Vegas [ctb]
+Date: 2023-05-01
+Maintainer: Sergi Baena-Miret <sergibaena94@gmail.com>
+Description: Regression and classification prediction for block-wise missing data
+License: CC BY-NC-SA 4.0 + file LICENSE
+Encoding: UTF-8
+NeedsCompilation: yes
+Imports: caret, rlang, MASS, corrplot, glmnet, binaryLogic, ade4, naniar, mvtnorm, devtools, factoextra, nnet
+Depends: rlang (>= 1.0.0), R (>= 3.2.0)
+RoxygenNote: 7.2.3

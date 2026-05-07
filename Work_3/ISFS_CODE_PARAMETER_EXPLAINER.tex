@@ -805,6 +805,7 @@ Recall / Sensitivity & Among true positives, the fraction correctly detected. \\
 Specificity & Among true negatives, the fraction correctly detected. \\
 F1 score & Harmonic mean of precision and recall. \\
 Balanced accuracy & Average of recall and specificity. \\
+GMEAN & Geometric mean of recall and specificity: $\sqrt{\mathrm{recall}\cdot\mathrm{specificity}}$. \\
 MCC & Matthews correlation coefficient. This uses TP, TN, FP, and FN together and is often more informative than accuracy when the classes are not perfectly balanced. \\
 Brier score & Mean squared error of the predicted probabilities:
 $\frac{1}{n}\sum_j (\hat{p}_j - y_j)^2$. Lower is better. It measures probability calibration and probability accuracy. \\
@@ -830,6 +831,7 @@ Exact profiles & \texttt{missingness\_profiles.py}, function \texttt{build\_exac
 Overlapping optimization groups & \texttt{missingness\_profiles.py}, function \texttt{build\_missingness\_profiles} \\
 Prediction logits and probabilities & \texttt{prediction.py}, functions \texttt{compute\_all\_logits}, \texttt{predict\_proba}, and \texttt{predict\_class} \\
 Metrics in the final report & \texttt{run\_training.py}, functions \texttt{compute\_binary\_metrics}, \texttt{compute\_training\_summary}, and \texttt{compute\_profile\_metrics} \\
+Train/test split and train-only standardization & \texttt{run\_training.py}, functions \texttt{split\_dataset}, \texttt{fit\_standardization\_preprocessor}, and \texttt{transform\_with\_preprocessor} \\
 \bottomrule
 \end{longtable}
 
@@ -842,7 +844,7 @@ profile groups,
 counts,
 \item \textbf{trust-region diagnostics} such as predicted increase, actual
 increase, ratio, and radius,
-\item \textbf{evaluation outputs} such as accuracy, MCC, Brier score, and the
+\item \textbf{evaluation outputs} such as accuracy, GMEAN, MCC, Brier score, and the
 exact-profile / optimization-group tables.
 \end{enumerate}
 

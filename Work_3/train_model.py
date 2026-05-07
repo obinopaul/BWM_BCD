@@ -219,6 +219,56 @@ def _build_parameter_snapshot(
     return snapshot
 
 
+def _step_diagnostics(step_info):
+    """
+    Keep trust-region C-step diagnostics in saved BCD history rows.
+    """
+    return {
+        "cost_step_norm": float(step_info["step_norm"]),
+        "cost_step_active_constraint": step_info["active_constraint"],
+        "cost_step_working_limit": float(step_info["working_step_limit"]),
+        "cost_step_global_limit": float(step_info["global_step_limit"]),
+        "cost_step_nonnegativity_limit": float(
+            step_info["nonnegativity_step_limit"]
+        ),
+        "cost_baseline_distance": float(step_info["baseline_distance"]),
+        "cost_baseline_radius": float(step_info["baseline_radius"]),
+        "cost_baseline_margin": float(step_info["baseline_margin"]),
+    }
+
+
+def _format_step_limit(value):
+    """
+    Format finite and infinite step limits for terminal diagnostics.
+    """
+    value = float(value)
+    if np.isposinf(value):
+        return "inf"
+    return f"{value:.6f}"
+
+
+def _print_cost_step_diagnostics(step_info, indent="    "):
+    """
+    Print the active trust-region constraint for the C update.
+    """
+    print(
+        f"{indent}Cost step: norm={step_info['step_norm']:.6f}, "
+        f"active_constraint={step_info['active_constraint']}"
+    )
+    print(
+        f"{indent}Step limits: "
+        f"working={_format_step_limit(step_info['working_step_limit'])}, "
+        f"global={_format_step_limit(step_info['global_step_limit'])}, "
+        f"nonnegativity={_format_step_limit(step_info['nonnegativity_step_limit'])}"
+    )
+    print(
+        f"{indent}Baseline ball: "
+        f"distance={step_info['baseline_distance']:.6f}, "
+        f"radius={step_info['baseline_radius']:.6f}, "
+        f"remaining_margin={step_info['baseline_margin']:.6f}"
+    )
+
+
 def compute_block_a_objective(
     X_blocks,
     y,
@@ -558,6 +608,7 @@ def train_blockwise_logistic_model(
                     "    No trust-region cost step was taken. "
                     "The current C, alpha, and beta were kept."
                 )
+                _print_cost_step_diagnostics(step_info)
             bcd_history.append(
                 {
                     "iteration": iteration,
@@ -575,6 +626,7 @@ def train_blockwise_logistic_model(
                     "trial_block_a_start_objective": float(current_reduced_objective),
                     "trial_block_a_end_objective": float(current_reduced_objective),
                     "trial_block_a_objective_change": 0.0,
+                    **_step_diagnostics(step_info),
                     **current_parts,
                 }
             )
@@ -666,6 +718,7 @@ def train_blockwise_logistic_model(
             "trial_block_a_objective_change": float(
                 trial_block_history[-1]["objective"] - trial_block_history[0]["objective"]
             ),
+            **_step_diagnostics(step_info),
         }
         bcd_history.append(bcd_entry)
         parameter_history.append(
@@ -734,6 +787,7 @@ def train_blockwise_logistic_model(
                 f"Beta L1: {current_parts['beta_l1_penalty']:.6f} | "
                 f"Alpha Max L1: {current_parts['alpha_max_l1_norm']:.6f}"
             )
+            _print_cost_step_diagnostics(step_info)
             if not accepted:
                 print(
                     "    Accepted=False means the trial trust-region update for C "
